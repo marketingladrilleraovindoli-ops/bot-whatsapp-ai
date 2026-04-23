@@ -8,10 +8,19 @@ const app = express();
 app.use(express.json());
 
 // ==============================
-// VERIFICACIÓN META
+// CONFIG
 // ==============================
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 
+// memoria simple
+const sessions = new Map();
+
+// evitar duplicados
+const processedMessages = new Set();
+
+// ==============================
+// WEBHOOK VERIFY
+// ==============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -22,32 +31,8 @@ app.get("/webhook", (req, res) => {
     return res.status(200).send(challenge);
   }
 
-  return res.sendStatus(403);
+  res.sendStatus(403);
 });
-
-// ==============================
-// PERSONALIDAD DE ANA
-// ==============================
-const SYSTEM_PROMPT = `
-Eres Ana, asesora comercial de una empresa de materiales de construcción en Colombia.
-
-Empresa:
-- Ladrillera La Toscana (Nemocón)
-- Productos: adoquines, fachaletas (thinbrick), ladrillos, productos arquitectónicos
-
-Reglas:
-- Hablas como persona real, NO como IA
-- Respuestas cortas (máx 2-4 líneas)
-- No explicas demasiado
-- Si el cliente pide algo específico, das SOLO esa info
-- Si no entiendes, preguntas de forma simple
-- Nunca eres robot ni dices "como IA"
-
-Tono:
-- Amable, natural, humano
-- Comercial pero no insistente
-- Ayudas, no vendes agresivo
-`;
 
 // ==============================
 // WEBHOOK PRINCIPAL
@@ -55,54 +40,101 @@ Tono:
 app.post("/webhook", async (req, res) => {
   try {
     const value = req.body?.entry?.[0]?.changes?.[0]?.value;
-
     const message = value?.messages?.[0];
 
-    // ❌ IMPORTANTE: ignorar si no es mensaje real
-    if (!message || message.type !== "text") {
-      return res.sendStatus(200);
-    }
+    if (!message) return res.sendStatus(200);
 
     const from = message.from;
-    const text = message.text?.body || "";
+    const msgId = message.id;
+    const text = message.text?.body?.trim()?.toLowerCase() || "";
+
+    // evitar duplicados
+    if (processedMessages.has(msgId)) return res.sendStatus(200);
+    processedMessages.add(msgId);
+
+    if (processedMessages.size > 2000) processedMessages.clear();
+
+    // ignorar eco
+    if (message.context?.from) return res.sendStatus(200);
 
     console.log("Mensaje recibido:", text);
 
     // ==============================
-    // OPENAI
+    // MEMORIA
     // ==============================
-    let reply = "En un momento te ayudo 😊";
-
-    try {
-      const response = await axios.post(
-        "https://api.openai.com/v1/chat/completions",
-        {
-          model: "gpt-4o-mini",
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: text }
-          ],
-          temperature: 0.6
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-            "Content-Type": "application/json"
-          }
-        }
-      );
-
-      reply = response.data.choices[0].message.content;
-
-    } catch (err) {
-      console.log("Error OpenAI:", err.response?.data || err.message);
-
-      // fallback humano si falla IA
-      reply = "Hola 😊 dime qué necesitas y te ayudo con gusto.";
+    if (!sessions.has(from)) {
+      sessions.set(from, {
+        history: [],
+        stage: "inicio",
+        lastProduct: null
+      });
     }
 
+    const session = sessions.get(from);
+
+    session.history.push({ role: "user", content: text });
+    if (session.history.length > 8) session.history.shift();
+
+    // detectar intención simple (esto ayuda MUCHO)
+    if (text.includes("adoquin")) session.lastProduct = "adoquin";
+    if (text.includes("fachaleta") || text.includes("thinbrick")) session.lastProduct = "fachaleta";
+
     // ==============================
-    // RESPUESTA WHATSAPP
+    // PROMPT ANA (MEJORADO HUMANO)
+    // ==============================
+    const systemPrompt = `
+Eres Ana, asesora comercial de Ladrillera La Toscana en Némocón.
+
+Personalidad:
+- Muy humana, amable y simple
+- Respuestas cortas (máx 2 líneas)
+- No suenas a IA ni robótica
+- Ayudas a elegir productos, no presionas venta
+- Si no tienes info exacta, preguntas simple
+
+Reglas:
+- Nunca des información que no pidan
+- Si el cliente ya dijo un producto, NO repreguntar lo mismo
+- Si el usuario está interesado, guía paso a paso simple
+
+Productos:
+- Adoquines (varios tamaños)
+- Fachaletas / Thinbrick
+- Ladrillos estructurales
+- Refractarios
+
+Si el usuario pide algo específico (ej: 20x10x6):
+responde SOLO ese producto y pregunta siguiente paso simple como:
+"¿Lo necesitas para piso o exterior?"
+`;
+
+    // ==============================
+    // OPENAI
+    // ==============================
+    const response = await axios.post(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...session.history
+        ],
+        temperature: 0.4
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    const reply = response.data.choices[0].message.content;
+
+    session.history.push({ role: "assistant", content: reply });
+
+    // ==============================
+    // WHATSAPP RESPONSE
     // ==============================
     await axios.post(
       `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -120,23 +152,19 @@ app.post("/webhook", async (req, res) => {
     );
 
     res.sendStatus(200);
-
   } catch (error) {
-    console.log("ERROR WEBHOOK:", error.response?.data || error.message);
+    console.error("ERROR WEBHOOK:", error.response?.data || error.message);
     res.sendStatus(200);
   }
 });
 
 // ==============================
-// HEALTH CHECK
-// ==============================
-app.get("/", (req, res) => {
-  res.send("Ana activa 🚀");
-});
-
-// ==============================
 // SERVER
 // ==============================
+app.get("/", (req, res) => {
+  res.send("Ana bot activo 🚀");
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Servidor corriendo en puerto " + PORT);
