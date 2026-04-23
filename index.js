@@ -7,24 +7,60 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-// Webhook de WhatsApp
+// ==============================
+// VERIFICACIÓN DE META (OBLIGATORIO)
+// ==============================
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
+
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode && token) {
+    if (mode === "subscribe" && token === VERIFY_TOKEN) {
+      console.log("Webhook verificado ✔");
+      return res.status(200).send(challenge);
+    } else {
+      return res.sendStatus(403);
+    }
+  }
+
+  res.sendStatus(200);
+});
+
+// ==============================
+// WEBHOOK PRINCIPAL (MENSAJES)
+// ==============================
 app.post("/webhook", async (req, res) => {
-  const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-
-  if (!message) return res.sendStatus(200);
-
-  const from = message.from;
-  const text = message.text?.body || "";
-
   try {
-    // OpenAI
+    const entry = req.body?.entry?.[0];
+    const change = entry?.changes?.[0];
+    const message = change?.value?.messages?.[0];
+
+    if (!message) return res.sendStatus(200);
+
+    const from = message.from;
+    const text = message.text?.body || "";
+
+    console.log("Mensaje recibido:", text);
+
+    // ==============================
+    // OPENAI REQUEST
+    // ==============================
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model: "gpt-5-mini",
+        model: "gpt-4o-mini",
         messages: [
-          { role: "system", content: "Eres un asistente de WhatsApp, responde corto y claro." },
-          { role: "user", content: text }
+          {
+            role: "system",
+            content: "Eres un asistente de WhatsApp. Responde corto, claro y útil."
+          },
+          {
+            role: "user",
+            content: text
+          }
         ]
       },
       {
@@ -37,7 +73,9 @@ app.post("/webhook", async (req, res) => {
 
     const reply = response.data.choices[0].message.content;
 
-    // WhatsApp reply
+    // ==============================
+    // RESPUESTA WHATSAPP
+    // ==============================
     await axios.post(
       `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
@@ -55,14 +93,22 @@ app.post("/webhook", async (req, res) => {
 
     res.sendStatus(200);
   } catch (error) {
-    console.error(error.response?.data || error.message);
-    res.sendStatus(500);
+    console.error("ERROR WEBHOOK:", error.response?.data || error.message);
+    res.sendStatus(200);
   }
 });
 
+// ==============================
+// HEALTH CHECK
+// ==============================
 app.get("/", (req, res) => {
   res.send("Bot WhatsApp activo 🚀");
 });
 
+// ==============================
+// SERVER
+// ==============================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Servidor corriendo en puerto " + PORT));
+app.listen(PORT, () => {
+  console.log("Servidor corriendo en puerto " + PORT);
+});
