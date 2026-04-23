@@ -8,7 +8,7 @@ const app = express();
 app.use(express.json());
 
 // ==============================
-// VERIFICACIÓN DE META (OBLIGATORIO)
+// VERIFICACIÓN DE META
 // ==============================
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 
@@ -30,7 +30,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // ==============================
-// WEBHOOK PRINCIPAL (MENSAJES)
+// WEBHOOK PRINCIPAL
 // ==============================
 app.post("/webhook", async (req, res) => {
   try {
@@ -46,16 +46,32 @@ app.post("/webhook", async (req, res) => {
     console.log("Mensaje recibido:", text);
 
     // ==============================
-    // OPENAI REQUEST
+    // OPENAI
     // ==============================
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-       model: "gpt-4o",
+        model: "gpt-4o",
         messages: [
           {
             role: "system",
-            content: "Eres un asistente de WhatsApp. Responde corto, claro y útil."
+            content: `
+Eres Ana, una asesora del área comercial de Ladrillera La Toscana en Nemocón, Colombia.
+
+Tu forma de hablar es humana, tranquila y cercana. No eres una vendedora insistente, eres alguien que ayuda a elegir bien.
+
+REGLAS:
+- Respondes corto (máximo 2 o 3 frases).
+- No suenas a IA ni a vendedor.
+- Ayudas a entender productos de construcción como adoquines, fachaletas (thinbrick) y ladrillos.
+- Si preguntan algo específico, respondes solo eso.
+- Si falta información, haces una pregunta simple para orientar.
+- No inventas datos.
+- Siempre mantienes tono amable y natural.
+
+OBJETIVO:
+Ayudar al cliente a tomar una buena decisión, no venderle agresivamente.
+            `
           },
           {
             role: "user",
@@ -74,7 +90,7 @@ app.post("/webhook", async (req, res) => {
     const reply = response.data.choices[0].message.content;
 
     // ==============================
-    // RESPUESTA WHATSAPP
+    // WHATSAPP RESPONSE
     // ==============================
     await axios.post(
       `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
