@@ -8,7 +8,7 @@ const app = express();
 app.use(express.json());
 
 // ==============================
-// VERIFICACIÓN DE META
+// VERIFICACIÓN META
 // ==============================
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 
@@ -17,28 +17,51 @@ app.get("/webhook", (req, res) => {
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode && token) {
-    if (mode === "subscribe" && token === VERIFY_TOKEN) {
-      console.log("Webhook verificado ✔");
-      return res.status(200).send(challenge);
-    } else {
-      return res.sendStatus(403);
-    }
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("Webhook verificado ✔");
+    return res.status(200).send(challenge);
   }
 
-  res.sendStatus(200);
+  return res.sendStatus(403);
 });
+
+// ==============================
+// PERSONALIDAD DE ANA
+// ==============================
+const SYSTEM_PROMPT = `
+Eres Ana, asesora comercial de una empresa de materiales de construcción en Colombia.
+
+Empresa:
+- Ladrillera La Toscana (Nemocón)
+- Productos: adoquines, fachaletas (thinbrick), ladrillos, productos arquitectónicos
+
+Reglas:
+- Hablas como persona real, NO como IA
+- Respuestas cortas (máx 2-4 líneas)
+- No explicas demasiado
+- Si el cliente pide algo específico, das SOLO esa info
+- Si no entiendes, preguntas de forma simple
+- Nunca eres robot ni dices "como IA"
+
+Tono:
+- Amable, natural, humano
+- Comercial pero no insistente
+- Ayudas, no vendes agresivo
+`;
 
 // ==============================
 // WEBHOOK PRINCIPAL
 // ==============================
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body?.entry?.[0];
-    const change = entry?.changes?.[0];
-    const message = change?.value?.messages?.[0];
+    const value = req.body?.entry?.[0]?.changes?.[0]?.value;
 
-    if (!message) return res.sendStatus(200);
+    const message = value?.messages?.[0];
+
+    // ❌ IMPORTANTE: ignorar si no es mensaje real
+    if (!message || message.type !== "text") {
+      return res.sendStatus(200);
+    }
 
     const from = message.from;
     const text = message.text?.body || "";
@@ -48,65 +71,38 @@ app.post("/webhook", async (req, res) => {
     // ==============================
     // OPENAI
     // ==============================
-    const response = await axios.post(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        model: "gpt-4o",
-        messages: [
-          {
-  role: "system",
-  content: `
-Eres Ana, asesora comercial de Ladrillera La Toscana en Nemocón, Colombia.
+    let reply = "En un momento te ayudo 😊";
 
-La empresa fabrica y vende principalmente:
-- Adoquines de diferentes medidas (ej: 20x10x6, 24x12x6, etc.)
-- Fachaletas arquitectónicas tipo Thinbrick
-- Ladrillos estructurales y productos de construcción en arcilla
-
-Tu forma de responder:
-
-- Hablas como una persona real por WhatsApp, no como IA.
-- Respuestas MUY cortas (máximo 1 o 2 frases).
-- Lenguaje simple, fácil y natural.
-- No haces preguntas largas ni complejas.
-- NO entrevistas al cliente.
-- NO obligas al usuario a dar detalles.
-- Si falta algo, haces SOLO una pregunta muy simple o das una sugerencia directa.
-- Si el usuario menciona un producto específico (ej: "adoquín 20x10x6"), respondes directo sobre ese producto sin pedir más.
-- Si el mensaje es muy general ("quiero adoquines"), das una recomendación simple o ejemplo.
-- No das precios si no te los piden.
-- No suenas a vendedor insistente.
-
-Estilo:
-- Cercano
-- Natural
-- Rápido
-- Tipo conversación de WhatsApp
-
-Ejemplo de tono:
-"Claro 😊 ese adoquín es ideal para pisos resistentes."
-"Tenemos varias fachaletas para fachadas modernas."
-"Sí, se usa mucho en parqueaderos y zonas peatonales."
-`
-},
-          {
-            role: "user",
-            content: text
+    try {
+      const response = await axios.post(
+        "https://api.openai.com/v1/chat/completions",
+        {
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: text }
+          ],
+          temperature: 0.6
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            "Content-Type": "application/json"
           }
-        ]
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          "Content-Type": "application/json"
         }
-      }
-    );
+      );
 
-    const reply = response.data.choices[0].message.content;
+      reply = response.data.choices[0].message.content;
+
+    } catch (err) {
+      console.log("Error OpenAI:", err.response?.data || err.message);
+
+      // fallback humano si falla IA
+      reply = "Hola 😊 dime qué necesitas y te ayudo con gusto.";
+    }
 
     // ==============================
-    // WHATSAPP RESPONSE
+    // RESPUESTA WHATSAPP
     // ==============================
     await axios.post(
       `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -124,8 +120,9 @@ Ejemplo de tono:
     );
 
     res.sendStatus(200);
+
   } catch (error) {
-    console.error("ERROR WEBHOOK:", error.response?.data || error.message);
+    console.log("ERROR WEBHOOK:", error.response?.data || error.message);
     res.sendStatus(200);
   }
 });
@@ -134,7 +131,7 @@ Ejemplo de tono:
 // HEALTH CHECK
 // ==============================
 app.get("/", (req, res) => {
-  res.send("Bot WhatsApp activo 🚀");
+  res.send("Ana activa 🚀");
 });
 
 // ==============================
