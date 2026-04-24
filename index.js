@@ -7,19 +7,14 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-// ==============================
-// CONFIG
-// ==============================
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 
-// memoria simple
+// memoria usuarios
 const sessions = new Map();
-
-// evitar duplicados
 const processedMessages = new Set();
 
 // ==============================
-// WEBHOOK VERIFY
+// VERIFY
 // ==============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -27,7 +22,6 @@ app.get("/webhook", (req, res) => {
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("Webhook verificado ✔");
     return res.status(200).send(challenge);
   }
 
@@ -35,106 +29,155 @@ app.get("/webhook", (req, res) => {
 });
 
 // ==============================
-// WEBHOOK PRINCIPAL
+// WEBHOOK
 // ==============================
 app.post("/webhook", async (req, res) => {
   try {
     const value = req.body?.entry?.[0]?.changes?.[0]?.value;
-    const message = value?.messages?.[0];
 
+    // ❌ evitar mensajes fantasma
+    if (value?.statuses) return res.sendStatus(200);
+
+    const message = value?.messages?.[0];
     if (!message) return res.sendStatus(200);
 
     const from = message.from;
     const msgId = message.id;
-    const text = message.text?.body?.trim()?.toLowerCase() || "";
+    const text = message.text?.body?.toLowerCase().trim();
 
-    // evitar duplicados
+    if (!text) return res.sendStatus(200);
+
+    // ❌ duplicados
     if (processedMessages.has(msgId)) return res.sendStatus(200);
     processedMessages.add(msgId);
 
-    if (processedMessages.size > 2000) processedMessages.clear();
-
-    // ignorar eco
-    if (message.context?.from) return res.sendStatus(200);
-
-    console.log("Mensaje recibido:", text);
+    console.log("Mensaje:", text);
 
     // ==============================
-    // MEMORIA
+    // SESIÓN
     // ==============================
     if (!sessions.has(from)) {
       sessions.set(from, {
         history: [],
-        stage: "inicio",
-        lastProduct: null
+        producto: null,
+        metros: null,
+        ubicacion: null
       });
     }
 
     const session = sessions.get(from);
 
-    session.history.push({ role: "user", content: text });
-    if (session.history.length > 8) session.history.shift();
+    // ==============================
+    // DETECTAR INTENCIÓN
+    // ==============================
+    if (text.includes("20") && text.includes("10") && text.includes("6")) {
+      session.producto = "adoquin_20x10x6";
+    }
 
-    // detectar intención simple (esto ayuda MUCHO)
-    if (text.includes("adoquin")) session.lastProduct = "adoquin";
-    if (text.includes("fachaleta") || text.includes("thinbrick")) session.lastProduct = "fachaleta";
+    if (text.includes("metro")) {
+      const num = parseInt(text);
+      if (num) session.metros = num;
+    }
+
+    if (text.includes("cogua") || text.includes("zipa") || text.includes("bogota")) {
+      session.ubicacion = text;
+    }
 
     // ==============================
-    // PROMPT ANA (MEJORADO HUMANO)
+    // RESPUESTAS INTELIGENTES
     // ==============================
-    const systemPrompt = `
-Eres Ana, asesora comercial de Ladrillera La Toscana en Némocón.
+    let reply = null;
 
-Personalidad:
-- Muy humana, amable y simple
-- Respuestas cortas (máx 2 líneas)
-- No suenas a IA ni robótica
-- Ayudas a elegir productos, no presionas venta
-- Si no tienes info exacta, preguntas simple
+    // PRODUCTO
+    if (session.producto === "adoquin_20x10x6" && !session.metros) {
+      reply = "sí claro 👍 ese es de los más usados para exterior";
+    }
 
-Reglas:
-- Nunca des información que no pidan
-- Si el cliente ya dijo un producto, NO repreguntar lo mismo
-- Si el usuario está interesado, guía paso a paso simple
+    // CALCULO REAL
+    if (session.producto === "adoquin_20x10x6" && session.metros && !session.calculado) {
+      const unidades = session.metros * 50;
+      reply = `para ${session.metros} m² necesitas aprox ${unidades} adoquines 👍`;
+      session.calculado = true;
+    }
 
-Productos:
-- Adoquines (varios tamaños)
-- Fachaletas / Thinbrick
-- Ladrillos estructurales
-- Refractarios
+    // ENVÍO
+    if (session.ubicacion && !session.envioRespondido) {
+      reply = `dale 👍 hasta ${session.ubicacion} sí hacemos envío, te reviso el costo exacto`;
+      session.envioRespondido = true;
+    }
 
-Si el usuario pide algo específico (ej: 20x10x6):
-responde SOLO ese producto y pregunta siguiente paso simple como:
-"¿Lo necesitas para piso o exterior?"
+    // TONALIDADES
+    if (text.includes("tono") || text.includes("color")) {
+      reply = "manejamos durazno, canelo y matizado 👍";
+    }
+
+    // IMÁGENES
+    if (text.includes("imagen") || text.includes("foto")) {
+      await axios.post(
+        `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
+        {
+          messaging_product: "whatsapp",
+          to: from,
+          type: "image",
+          image: {
+            link: "https://i.imgur.com/yourimage.jpg"
+          }
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
+
+      return res.sendStatus(200);
+    }
+
+    // SI NO HAY RESPUESTA → IA
+    if (!reply) {
+      const systemPrompt = `
+Eres Ana de Ladrillera La Toscana.
+
+Hablas como persona real, corta y natural.
+
+- no suenas robot
+- no repites preguntas
+- ayudas fácil
+- dices cosas como "dale", "perfecto", "ya te reviso"
+- guías a cotizar o comprar
+
+no das info que no pidan
 `;
 
-    // ==============================
-    // OPENAI
-    // ==============================
-    const response = await axios.post(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...session.history
-        ],
-        temperature: 0.4
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          "Content-Type": "application/json"
+      const response = await axios.post(
+        "https://api.openai.com/v1/chat/completions",
+        {
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: text }
+          ]
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            "Content-Type": "application/json"
+          }
         }
-      }
-    );
+      );
 
-    const reply = response.data.choices[0].message.content;
-
-    session.history.push({ role: "assistant", content: reply });
+      reply = response.data.choices[0].message.content;
+    }
 
     // ==============================
-    // WHATSAPP RESPONSE
+    // DELAY HUMANO
+    // ==============================
+    const delay = Math.floor(Math.random() * 2000) + 1500;
+    await new Promise(r => setTimeout(r, delay));
+
+    // ==============================
+    // RESPUESTA
     // ==============================
     await axios.post(
       `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -152,20 +195,18 @@ responde SOLO ese producto y pregunta siguiente paso simple como:
     );
 
     res.sendStatus(200);
+
   } catch (error) {
-    console.error("ERROR WEBHOOK:", error.response?.data || error.message);
+    console.error(error.response?.data || error.message);
     res.sendStatus(200);
   }
 });
 
 // ==============================
-// SERVER
-// ==============================
 app.get("/", (req, res) => {
-  res.send("Ana bot activo 🚀");
+  res.send("Ana PRO activa 🚀");
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("Servidor corriendo en puerto " + PORT);
+app.listen(process.env.PORT || 3000, () => {
+  console.log("Servidor activo");
 });
