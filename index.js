@@ -9,12 +9,37 @@ app.use(express.json());
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 
-// memoria usuarios
+// ==============================
+// MEMORIA
+// ==============================
 const sessions = new Map();
 const processedMessages = new Set();
 
 // ==============================
-// VERIFY
+// CATÁLOGO REAL BASE (puedes crecerlo)
+// ==============================
+const catalogo = {
+  adoquin_20x10x6: {
+    nombre: "Adoquín 20x10x6",
+    uso: "ideal para exteriores, tráfico peatonal y vehicular",
+    rendimiento: 50,
+    tonos: ["durazno", "canelo", "matizado"]
+  },
+  adoquin_24x12x6: {
+    nombre: "Adoquín 24x12x6",
+    uso: "más robusto, recomendado para tráfico pesado",
+    rendimiento: 35,
+    tonos: ["gris", "rojo", "matizado"]
+  },
+  fachaleta: {
+    nombre: "Fachaleta (Thinbrick)",
+    uso: "acabados decorativos tipo ladrillo",
+    tonos: ["nero", "bianco", "toscano", "capuccino"]
+  }
+};
+
+// ==============================
+// VERIFY META
 // ==============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -35,7 +60,7 @@ app.post("/webhook", async (req, res) => {
   try {
     const value = req.body?.entry?.[0]?.changes?.[0]?.value;
 
-    // ❌ evitar mensajes fantasma
+    // ❌ evitar eventos que no son mensajes
     if (value?.statuses) return res.sendStatus(200);
 
     const message = value?.messages?.[0];
@@ -47,31 +72,46 @@ app.post("/webhook", async (req, res) => {
 
     if (!text) return res.sendStatus(200);
 
-    // ❌ duplicados
+    // ❌ evitar duplicados
     if (processedMessages.has(msgId)) return res.sendStatus(200);
     processedMessages.add(msgId);
 
     console.log("Mensaje:", text);
 
     // ==============================
-    // SESIÓN
+    // CREAR SESIÓN
     // ==============================
     if (!sessions.has(from)) {
       sessions.set(from, {
         history: [],
         producto: null,
         metros: null,
-        ubicacion: null
+        ubicacion: null,
+        calculado: false
       });
     }
 
     const session = sessions.get(from);
 
     // ==============================
-    // DETECTAR INTENCIÓN
+    // GUARDAR HISTORIAL (IMPORTANTE)
+    // ==============================
+    session.history.push({ role: "user", content: text });
+    if (session.history.length > 10) session.history.shift();
+
+    // ==============================
+    // DETECCIÓN INTELIGENTE
     // ==============================
     if (text.includes("20") && text.includes("10") && text.includes("6")) {
       session.producto = "adoquin_20x10x6";
+    }
+
+    if (text.includes("24") && text.includes("12") && text.includes("6")) {
+      session.producto = "adoquin_24x12x6";
+    }
+
+    if (text.includes("facha") || text.includes("thinbrick")) {
+      session.producto = "fachaleta";
     }
 
     if (text.includes("metro")) {
@@ -84,34 +124,36 @@ app.post("/webhook", async (req, res) => {
     }
 
     // ==============================
-    // RESPUESTAS INTELIGENTES
+    // RESPUESTA INTELIGENTE
     // ==============================
     let reply = null;
 
-    // PRODUCTO
-    if (session.producto === "adoquin_20x10x6" && !session.metros) {
-      reply = "sí claro 👍 ese es de los más usados para exterior";
+    const producto = catalogo[session.producto];
+
+    // 🔹 RESPUESTA DE PRODUCTO
+    if (producto && !session.metros && !reply) {
+      reply = `sí 👍 ese ${producto.nombre.toLowerCase()} es ${producto.uso}`;
     }
 
-    // CALCULO REAL
-    if (session.producto === "adoquin_20x10x6" && session.metros && !session.calculado) {
-      const unidades = session.metros * 50;
-      reply = `para ${session.metros} m² necesitas aprox ${unidades} adoquines 👍`;
+    // 🔹 CÁLCULO REAL
+    if (producto && session.metros && !session.calculado && producto.rendimiento) {
+      const total = session.metros * producto.rendimiento;
+      reply = `para ${session.metros} m² necesitas aprox ${total} unidades 👍`;
       session.calculado = true;
     }
 
-    // ENVÍO
+    // 🔹 ENVÍO
     if (session.ubicacion && !session.envioRespondido) {
-      reply = `dale 👍 hasta ${session.ubicacion} sí hacemos envío, te reviso el costo exacto`;
+      reply = `sí hacemos envío hasta ${session.ubicacion} 👍 te reviso el costo`;
       session.envioRespondido = true;
     }
 
-    // TONALIDADES
-    if (text.includes("tono") || text.includes("color")) {
-      reply = "manejamos durazno, canelo y matizado 👍";
+    // 🔹 TONOS
+    if (producto && (text.includes("tono") || text.includes("color"))) {
+      reply = `manejamos tonos ${producto.tonos.join(", ")} 👍`;
     }
 
-    // IMÁGENES
+    // 🔹 IMÁGENES
     if (text.includes("imagen") || text.includes("foto")) {
       await axios.post(
         `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -120,7 +162,7 @@ app.post("/webhook", async (req, res) => {
           to: from,
           type: "image",
           image: {
-            link: "https://i.imgur.com/yourimage.jpg"
+            link: "https://i.imgur.com/8Km9tLL.jpg" // cambia por tus reales
           }
         },
         {
@@ -134,20 +176,30 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // SI NO HAY RESPUESTA → IA
+    // ==============================
+    // IA SOLO SI NO HAY RESPUESTA
+    // ==============================
     if (!reply) {
       const systemPrompt = `
 Eres Ana de Ladrillera La Toscana.
 
-Hablas como persona real, corta y natural.
+Hablas como persona real de Colombia.
 
-- no suenas robot
-- no repites preguntas
-- ayudas fácil
-- dices cosas como "dale", "perfecto", "ya te reviso"
-- guías a cotizar o comprar
+Reglas:
+- Respuestas cortas
+- Natural (ej: "dale", "ya te reviso", "que pena")
+- No suenas robot
+- No repites preguntas
+- No presionas venta
+- Ayudas fácil
+- Recuerdas lo que el cliente dijo
 
-no das info que no pidan
+Objetivo:
+- ayudar
+- guiar a cotizar
+- cerrar venta de forma natural
+
+Nunca des info que no pidan.
 `;
 
       const response = await axios.post(
@@ -156,7 +208,7 @@ no das info que no pidan
           model: "gpt-4o-mini",
           messages: [
             { role: "system", content: systemPrompt },
-            { role: "user", content: text }
+            ...session.history
           ]
         },
         {
@@ -170,14 +222,17 @@ no das info que no pidan
       reply = response.data.choices[0].message.content;
     }
 
+    // guardar respuesta en memoria
+    session.history.push({ role: "assistant", content: reply });
+
     // ==============================
-    // DELAY HUMANO
+    // DELAY HUMANO (REALISTA)
     // ==============================
-    const delay = Math.floor(Math.random() * 2000) + 1500;
+    const delay = Math.floor(Math.random() * 3000) + 1500;
     await new Promise(r => setTimeout(r, delay));
 
     // ==============================
-    // RESPUESTA
+    // RESPONDER
     // ==============================
     await axios.post(
       `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -197,7 +252,7 @@ no das info que no pidan
     res.sendStatus(200);
 
   } catch (error) {
-    console.error(error.response?.data || error.message);
+    console.error("ERROR:", error.response?.data || error.message);
     res.sendStatus(200);
   }
 });
