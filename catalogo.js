@@ -1,25 +1,76 @@
-export const catalogo = {
-  adoquines: [
-    { clave: "adoquin_24x12x6", nombre: "Adoquin Rectangular 24x12x6", medidas: "24x12x6 cm", uso: "exterior", tonos: ["durazno","canelo","matizado"] },
-    { clave: "adoquin_20x10x8", nombre: "Adoquin Rectangular 20x10x8", medidas: "20x10x8 cm", uso: "alto trafico", tonos: ["durazno","canelo","matizado"] },
-    { clave: "adoquin_20x10x6", nombre: "Adoquin Rectangular 20x10x6", medidas: "20x10x6 cm", uso: "exterior", tonos: ["durazno","canelo","matizado"] },
-    { clave: "adoquin_20x10x4", nombre: "Adoquin Rectangular 20x10x4", medidas: "20x10x4 cm", uso: "peatonal", tonos: ["durazno","canelo","matizado"] },
-    { clave: "adoquin_20x10x3", nombre: "Adoquin Rectangular 20x10x3", medidas: "20x10x3 cm", uso: "decorativo", tonos: ["durazno","canelo","matizado"] },
-    { clave: "adoquin_corbatin", nombre: "Adoquin Corbatin 20x10x6", medidas: "20x10x6 cm", uso: "exterior", tonos: ["durazno","canelo","matizado"] },
-    { clave: "adoquin_ecologico", nombre: "Adoquin Ecologico 24x12x6", medidas: "24x12x6 cm", uso: "permeable", tonos: ["durazno","canelo","matizado"] },
-    { clave: "adoquin_cuarteron", nombre: "Adoquin Cuarteron 24x6x6", medidas: "24x6x6 cm", uso: "decorativo", tonos: ["durazno","canelo","matizado"] }
-  ],
+const catalogo = {
+  adoquin_20x10x3: {
+    nombre: "Adoquín 20x10x3",
+    rendimiento: 50,
+    tonos: ["durazno", "canelo", "matizado"],
+    imagenes: []
+  },
 
-  fachaletas: [
-    { clave: "nero", nombre: "Nero Piamonte" },
-    { clave: "bianco", nombre: "Bianco Artico" },
-    { clave: "toscano", nombre: "Toscano" },
-    { clave: "capuccino", nombre: "Capuccino" }
-  ],
+  adoquin_20x10x4: {
+    nombre: "Adoquín 20x10x4",
+    rendimiento: 50,
+    tonos: ["durazno", "canelo", "matizado"],
+    imagenes: []
+  },
 
-  ladrillos: [
-    { clave: "tolete_grande", nombre: "Tolete comun recocido grande", medidas: "22x11x6.5 cm" },
-    { clave: "tolete_pequeno", nombre: "Tolete comun recocido pequeño", medidas: "19x10x6 cm" },
-    { clave: "refractario", nombre: "Ladrillo refractario" }
-  ]
+  adoquin_20x10x6: {
+    nombre: "Adoquín 20x10x6",
+    rendimiento: 50,
+    tonos: ["durazno", "canelo", "matizado"],
+    imagenes: []
+  },
+
+  adoquin_20x10x8: {
+    nombre: "Adoquín 20x10x8",
+    rendimiento: 50,
+    tonos: ["durazno", "canelo", "matizado"],
+    imagenes: []
+  },
+
+  adoquin_24x12x6: {
+    nombre: "Adoquín 24x12x6",
+    rendimiento: 34,
+    tonos: ["canelo", "matizado"],
+    imagenes: []
+  },
+
+  adoquin_ecologico: {
+    nombre: "Adoquín ecológico 24x12x6",
+    rendimiento: 45,
+    tonos: ["matizado"],
+    imagenes: []
+  },
+
+  adoquin_corbatin: {
+    nombre: "Adoquín corbatín 20x10x6",
+    rendimiento: 55,
+    tonos: ["durazno", "canelo", "matizado"],
+    imagenes: []
+  },
+
+  adoquin_cuarteron: {
+    nombre: "Adoquín cuarterón 24x6x6",
+    rendimiento: 68,
+    imagenes: []
+  },
+
+  fachaleta_cappuccino: {
+    nombre: "Fachaleta Cappuccino",
+    imagenes: []
+  },
+
+  fachaleta_nero: {
+    nombre: "Fachaleta Nero Piamonte",
+    imagenes: []
+  },
+
+  fachaleta_toscano: {
+    nombre: "Fachaleta Toscano / Romano",
+    imagenes: []
+  },
+
+  fachaleta_bianco: {
+    nombre: "Fachaleta Bianco Ártico",
+    imagenes: []
+  }
 };
