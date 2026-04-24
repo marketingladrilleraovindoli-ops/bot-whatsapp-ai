@@ -10,36 +10,46 @@ app.use(express.json());
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 
 // ==============================
-// MEMORIA
+// 🧠 MEMORIA
 // ==============================
 const sessions = new Map();
 const processedMessages = new Set();
 
 // ==============================
-// CATÁLOGO REAL BASE (puedes crecerlo)
+// 📦 CATÁLOGO (EDITA CON TUS IMÁGENES)
 // ==============================
 const catalogo = {
   adoquin_20x10x6: {
     nombre: "Adoquín 20x10x6",
-    uso: "ideal para exteriores, tráfico peatonal y vehicular",
+    uso: "ideal para exteriores",
     rendimiento: 50,
-    tonos: ["durazno", "canelo", "matizado"]
+    tonos: ["durazno", "canelo", "matizado"],
+    imagenes: [
+      "https://i.imgur.com/8Km9tLL.jpg",
+      "https://i.imgur.com/5tj6S7Ol.jpg",
+      "https://i.imgur.com/3ZQ3Z6cl.jpg"
+    ]
   },
-  adoquin_24x12x6: {
-    nombre: "Adoquín 24x12x6",
-    uso: "más robusto, recomendado para tráfico pesado",
-    rendimiento: 35,
-    tonos: ["gris", "rojo", "matizado"]
+
+  fachaleta_capuccino: {
+    nombre: "Fachaleta Capuccino",
+    imagenes: [
+      "https://i.imgur.com/abc1.jpg",
+      "https://i.imgur.com/abc2.jpg"
+    ]
   },
-  fachaleta: {
-    nombre: "Fachaleta (Thinbrick)",
-    uso: "acabados decorativos tipo ladrillo",
-    tonos: ["nero", "bianco", "toscano", "capuccino"]
+
+  fachaleta_toscano: {
+    nombre: "Fachaleta Toscano",
+    imagenes: [
+      "https://i.imgur.com/xyz1.jpg",
+      "https://i.imgur.com/xyz2.jpg"
+    ]
   }
 };
 
 // ==============================
-// VERIFY META
+// ✅ VERIFY META
 // ==============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -54,13 +64,13 @@ app.get("/webhook", (req, res) => {
 });
 
 // ==============================
-// WEBHOOK
+// 🚀 WEBHOOK
 // ==============================
 app.post("/webhook", async (req, res) => {
   try {
     const value = req.body?.entry?.[0]?.changes?.[0]?.value;
 
-    // ❌ evitar eventos que no son mensajes
+    // ❌ evitar estados y eventos raros
     if (value?.statuses) return res.sendStatus(200);
 
     const message = value?.messages?.[0];
@@ -76,10 +86,12 @@ app.post("/webhook", async (req, res) => {
     if (processedMessages.has(msgId)) return res.sendStatus(200);
     processedMessages.add(msgId);
 
+    if (processedMessages.size > 1000) processedMessages.clear();
+
     console.log("Mensaje:", text);
 
     // ==============================
-    // CREAR SESIÓN
+    // 🧠 SESIÓN
     // ==============================
     if (!sessions.has(from)) {
       sessions.set(from, {
@@ -87,31 +99,27 @@ app.post("/webhook", async (req, res) => {
         producto: null,
         metros: null,
         ubicacion: null,
-        calculado: false
+        calculado: false,
+        envioRespondido: false
       });
     }
 
     const session = sessions.get(from);
 
     // ==============================
-    // GUARDAR HISTORIAL (IMPORTANTE)
+    // 🔍 DETECTAR INTENCIÓN
     // ==============================
-    session.history.push({ role: "user", content: text });
-    if (session.history.length > 10) session.history.shift();
 
-    // ==============================
-    // DETECCIÓN INTELIGENTE
-    // ==============================
     if (text.includes("20") && text.includes("10") && text.includes("6")) {
       session.producto = "adoquin_20x10x6";
     }
 
-    if (text.includes("24") && text.includes("12") && text.includes("6")) {
-      session.producto = "adoquin_24x12x6";
+    if (text.includes("capuccino")) {
+      session.producto = "fachaleta_capuccino";
     }
 
-    if (text.includes("facha") || text.includes("thinbrick")) {
-      session.producto = "fachaleta";
+    if (text.includes("toscano")) {
+      session.producto = "fachaleta_toscano";
     }
 
     if (text.includes("metro")) {
@@ -119,51 +127,30 @@ app.post("/webhook", async (req, res) => {
       if (num) session.metros = num;
     }
 
-    if (text.includes("cogua") || text.includes("zipa") || text.includes("bogota")) {
+    if (
+      text.includes("cogua") ||
+      text.includes("zipa") ||
+      text.includes("bogota")
+    ) {
       session.ubicacion = text;
     }
 
+    const quiereImagen =
+      text.includes("imagen") ||
+      text.includes("foto") ||
+      text.includes("ver") ||
+      text.includes("muestr");
+
     // ==============================
-    // RESPUESTA INTELIGENTE
+    // 🖼️ ENVIAR IMÁGENES
     // ==============================
-    let reply = null;
-
-    const producto = catalogo[session.producto];
-
-    // 🔹 RESPUESTA DE PRODUCTO
-    if (producto && !session.metros && !reply) {
-      reply = `sí 👍 ese ${producto.nombre.toLowerCase()} es ${producto.uso}`;
-    }
-
-    // 🔹 CÁLCULO REAL
-    if (producto && session.metros && !session.calculado && producto.rendimiento) {
-      const total = session.metros * producto.rendimiento;
-      reply = `para ${session.metros} m² necesitas aprox ${total} unidades 👍`;
-      session.calculado = true;
-    }
-
-    // 🔹 ENVÍO
-    if (session.ubicacion && !session.envioRespondido) {
-      reply = `sí hacemos envío hasta ${session.ubicacion} 👍 te reviso el costo`;
-      session.envioRespondido = true;
-    }
-
-    // 🔹 TONOS
-    if (producto && (text.includes("tono") || text.includes("color"))) {
-      reply = `manejamos tonos ${producto.tonos.join(", ")} 👍`;
-    }
-
-    // 🔹 IMÁGENES
-    if (text.includes("imagen") || text.includes("foto")) {
+    if (quiereImagen && catalogo[session.producto]?.imagenes) {
       await axios.post(
         `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
         {
           messaging_product: "whatsapp",
           to: from,
-          type: "image",
-          image: {
-            link: "https://i.imgur.com/8Km9tLL.jpg" // cambia por tus reales
-          }
+          text: { body: "mira 👍" }
         },
         {
           headers: {
@@ -173,33 +160,71 @@ app.post("/webhook", async (req, res) => {
         }
       );
 
+      for (const img of catalogo[session.producto].imagenes) {
+        await axios.post(
+          `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
+          {
+            messaging_product: "whatsapp",
+            to: from,
+            type: "image",
+            image: { link: img }
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+              "Content-Type": "application/json"
+            }
+          }
+        );
+
+        await new Promise(r => setTimeout(r, 800));
+      }
+
       return res.sendStatus(200);
     }
 
     // ==============================
-    // IA SOLO SI NO HAY RESPUESTA
+    // 🧠 RESPUESTAS INTELIGENTES
+    // ==============================
+    let reply = null;
+
+    if (session.producto === "adoquin_20x10x6" && !session.metros) {
+      reply = "sí 👍 ese es muy usado para exterior";
+    }
+
+    if (session.producto === "adoquin_20x10x6" && session.metros && !session.calculado) {
+      const unidades = session.metros * 50;
+      reply = `para ${session.metros} m² necesitas aprox ${unidades} adoquines 👍`;
+      session.calculado = true;
+    }
+
+    if (session.ubicacion && !session.envioRespondido) {
+      reply = `dale 👍 hasta ${session.ubicacion} sí hacemos envío, te reviso el costo`;
+      session.envioRespondido = true;
+    }
+
+    if (text.includes("tono") || text.includes("color")) {
+      reply = "manejamos durazno, canelo y matizado 👍";
+    }
+
+    // ==============================
+    // 🤖 IA (SOLO SI NO HAY RESPUESTA)
     // ==============================
     if (!reply) {
       const systemPrompt = `
-Eres Ana de Ladrillera La Toscana.
+Eres Ana, asesora de Ladrillera La Toscana.
 
-Hablas como persona real de Colombia.
+Hablas como persona real.
 
 Reglas:
-- Respuestas cortas
-- Natural (ej: "dale", "ya te reviso", "que pena")
-- No suenas robot
-- No repites preguntas
-- No presionas venta
-- Ayudas fácil
-- Recuerdas lo que el cliente dijo
-
-Objetivo:
-- ayudar
-- guiar a cotizar
-- cerrar venta de forma natural
-
-Nunca des info que no pidan.
+- respuestas cortas
+- natural (ej: "dale", "perfecto", "ya te reviso")
+- no repites preguntas
+- no suenas robot
+- no presionas venta
+- ayudas fácil
+- no das info que no pidan
+- si no entiendes: "qué pena, no te entendí bien"
 `;
 
       const response = await axios.post(
@@ -208,7 +233,7 @@ Nunca des info que no pidan.
           model: "gpt-4o-mini",
           messages: [
             { role: "system", content: systemPrompt },
-            ...session.history
+            { role: "user", content: text }
           ]
         },
         {
@@ -222,17 +247,14 @@ Nunca des info que no pidan.
       reply = response.data.choices[0].message.content;
     }
 
-    // guardar respuesta en memoria
-    session.history.push({ role: "assistant", content: reply });
-
     // ==============================
-    // DELAY HUMANO (REALISTA)
+    // ⏱️ DELAY HUMANO
     // ==============================
-    const delay = Math.floor(Math.random() * 3000) + 1500;
+    const delay = Math.floor(Math.random() * 2000) + 1500;
     await new Promise(r => setTimeout(r, delay));
 
     // ==============================
-    // RESPONDER
+    // 📤 RESPUESTA
     // ==============================
     await axios.post(
       `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
