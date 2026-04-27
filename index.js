@@ -11,7 +11,7 @@ app.use(express.json());
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 
 // ==============================
-// 🧠 MEMORIA REAL
+// 🧠 MEMORIA
 // ==============================
 const sessions = new Map();
 const processedMessages = new Set();
@@ -19,15 +19,11 @@ const processedMessages = new Set();
 // ==============================
 // 🧠 NORMALIZAR TEXTO
 // ==============================
-function normalizar(texto) {
+function normalizarTexto(texto) {
   return texto
     .toLowerCase()
-    .replace(/á/g, "a")
-    .replace(/é/g, "e")
-    .replace(/í/g, "i")
-    .replace(/ó/g, "o")
-    .replace(/ú/g, "u")
-    .replace(/adoquines|adoquin|adoqin|doquines|doquin|adokines/g, "adoquin");
+    .replace(/doquin|doquines|adokines|adoqin/g, "adoquin")
+    .replace(/fachada/g, "fachaleta");
 }
 
 // ==============================
@@ -39,16 +35,19 @@ function detectarProducto(texto) {
 
     if (texto.includes(nombre)) return key;
 
-    // detectar medidas tipo 20x10x6
-    const medida = nombre.match(/\d+x\d+x\d+/);
-    if (medida && texto.includes(medida[0])) return key;
+    if (texto.includes("20x10x3") && key.includes("20x10x3")) return key;
+    if (texto.includes("20x10x4") && key.includes("20x10x4")) return key;
+    if (texto.includes("20x10x6") && key.includes("20x10x6")) return key;
+    if (texto.includes("20x10x8") && key.includes("20x10x8")) return key;
   }
+
+  if (texto.includes("adoquin")) return "GENERAL_ADOQUINES";
 
   return null;
 }
 
 // ==============================
-// 📤 ENVIAR MENSAJE
+// 📤 MENSAJE TEXTO
 // ==============================
 async function enviarMensaje(to, body) {
   await axios.post(
@@ -60,8 +59,7 @@ async function enviarMensaje(to, body) {
     },
     {
       headers: {
-        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json"
+        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`
       }
     }
   );
@@ -71,13 +69,16 @@ async function enviarMensaje(to, body) {
 // 🖼️ ENVIAR IMÁGENES
 // ==============================
 async function enviarImagenes(to, producto) {
-  const data = catalogo[producto];
+  const item = catalogo[producto];
 
-  if (!data?.imagenes?.length) return;
+  if (!item?.imagenes?.length) {
+    await enviarMensaje(to, "aún no tengo imágenes cargadas 😅");
+    return;
+  }
 
-  await enviarMensaje(to, `mira ${data.nombre} 👇`);
+  await enviarMensaje(to, `mira ${item.nombre} 👇`);
 
-  for (const img of data.imagenes) {
+  for (const img of item.imagenes) {
     await axios.post(
       `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
@@ -88,23 +89,32 @@ async function enviarImagenes(to, producto) {
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-          "Content-Type": "application/json"
+          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`
         }
       }
     );
 
     await new Promise(r => setTimeout(r, 700));
   }
-
-  await enviarMensaje(
-    to,
-    "si quieres te ayudo a calcular lo que necesitas o te doy idea de costo"
-  );
 }
 
 // ==============================
-// ✅ VERIFY META
+// 📦 MOSTRAR CATÁLOGO
+// ==============================
+async function mostrarCatalogo(to) {
+  let mensaje = "mira 👇 manejamos:\n\n";
+
+  for (const key in catalogo) {
+    mensaje += `• ${catalogo[key].nombre}\n`;
+  }
+
+  mensaje += "\nsi quieres fotos dime cuál 👍";
+
+  await enviarMensaje(to, mensaje);
+}
+
+// ==============================
+// ✅ VERIFY
 // ==============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -136,137 +146,97 @@ app.post("/webhook", async (req, res) => {
     let text = message.text?.body;
     if (!text) return res.sendStatus(200);
 
-    text = normalizar(text);
+    text = normalizarTexto(text);
 
+    // ❌ evitar duplicados
     if (processedMessages.has(msgId)) return res.sendStatus(200);
     processedMessages.add(msgId);
 
     console.log("Mensaje:", text);
 
     // ==============================
-    // 🧠 CREAR SESIÓN
+    // 🧠 SESIÓN
     // ==============================
     if (!sessions.has(from)) {
       sessions.set(from, {
-        estado: "inicio",
         producto: null,
-        metros: null
+        esperando: null
       });
     }
 
     const session = sessions.get(from);
 
-    const esSi = ["si", "dale", "ok", "claro"].includes(text);
-    const quiereTodo = text.includes("todo");
-    const quiereImagen = text.includes("foto") || text.includes("imagen") || text.includes("ver");
+    const productoDetectado = detectarProducto(text);
+    if (productoDetectado) session.producto = productoDetectado;
+
+    const esSi = ["si", "sí", "dale", "ok", "listo"].includes(text);
+
+    const quiereImagen =
+      text.includes("imagen") ||
+      text.includes("imagenes") ||
+      text.includes("foto") ||
+      text.includes("fotos") ||
+      text.includes("ver") ||
+      text.includes("muestra") ||
+      text.includes("mostrar") ||
+      text.includes("manda");
+
+    const quiereTodo =
+      text.includes("todo") ||
+      text.includes("todos") ||
+      text.includes("catalogo");
 
     // ==============================
-    // 🔍 DETECTAR PRODUCTO
+    // 📦 MOSTRAR TODO
     // ==============================
-    const prod = detectarProducto(text);
-    if (prod) {
-      session.producto = prod;
-      session.estado = "producto_seleccionado";
-    }
-
-    // ==============================
-    // 🧠 FLUJO INTELIGENTE
-    // ==============================
-
-    // 1️⃣ SALUDO
-    if (text === "hola" || text === "hol") {
-      await enviarMensaje(from, "hola 😊 en que te ayudo?");
-      return res.sendStatus(200);
-    }
-
-    // 2️⃣ QUIERE ADOQUINES
-    if (text.includes("adoquin")) {
-      session.estado = "mostrando_catalogo";
-
-      let lista = "manejamos estos:\n\n";
-
-      for (const key in catalogo) {
-        lista += `• ${catalogo[key].nombre}\n`;
-      }
-
-      lista += "\nsi quieres ver alguno dime cual";
-
-      await enviarMensaje(from, lista);
-      return res.sendStatus(200);
-    }
-
-    // 3️⃣ MOSTRAR TODO
     if (quiereTodo) {
-      let lista = "mira 👇\n\n";
-
-      for (const key in catalogo) {
-        lista += `• ${catalogo[key].nombre}\n`;
-      }
-
-      lista += "\ndime cual quieres ver";
-
-      await enviarMensaje(from, lista);
+      await mostrarCatalogo(from);
+      session.esperando = "elegir_producto";
       return res.sendStatus(200);
-    }
-
-    // 4️⃣ SI DICE "SI"
-    if (esSi) {
-      if (session.estado === "mostrando_catalogo") {
-        await enviarMensaje(from, "cual te muestro?");
-        return res.sendStatus(200);
-      }
-
-      if (session.estado === "producto_seleccionado") {
-        await enviarImagenes(from, session.producto);
-        session.estado = "mostro_imagenes";
-        return res.sendStatus(200);
-      }
-
-      if (session.estado === "mostro_imagenes") {
-        await enviarMensaje(from, "cuantos metros necesitas?");
-        session.estado = "esperando_metros";
-        return res.sendStatus(200);
-      }
-    }
-
-    // 5️⃣ MOSTRAR IMÁGENES DIRECTO
-    if (quiereImagen && session.producto) {
-      await enviarImagenes(from, session.producto);
-      session.estado = "mostro_imagenes";
-      return res.sendStatus(200);
-    }
-
-    // 6️⃣ SI YA ELIGIÓ PRODUCTO
-    if (session.producto && session.estado === "producto_seleccionado") {
-      await enviarImagenes(from, session.producto);
-      session.estado = "mostro_imagenes";
-      return res.sendStatus(200);
-    }
-
-    // 7️⃣ DETECTAR METROS
-    if (session.estado === "esperando_metros") {
-      const num = parseInt(text);
-      if (num) {
-        const rendimiento = catalogo[session.producto].rendimiento || 50;
-        const total = num * rendimiento;
-
-        await enviarMensaje(
-          from,
-          `para ${num} m² necesitas aprox ${total} unidades`
-        );
-
-        await enviarMensaje(
-          from,
-          "si quieres te ayudo con precio o envio"
-        );
-
-        session.estado = "cotizando";
-        return res.sendStatus(200);
-      }
     }
 
     // ==============================
-    // 🤖 IA SOLO SI FALLA TODO
+    // 👀 SI DICE "SI"
+    // ==============================
+    if (esSi && session.esperando === "mostrar_catalogo") {
+      await mostrarCatalogo(from);
+      session.esperando = "elegir_producto";
+      return res.sendStatus(200);
+    }
+
+    // ==============================
+    // 🔥 IMÁGENES DIRECTAS
+    // ==============================
+    if (session.producto && quiereImagen) {
+      if (session.producto === "GENERAL_ADOQUINES") {
+        await mostrarCatalogo(from);
+        session.esperando = "elegir_producto";
+        return res.sendStatus(200);
+      }
+
+      await enviarImagenes(from, session.producto);
+      return res.sendStatus(200);
+    }
+
+    // ==============================
+    // 🔥 SI DICE "SI" Y YA HAY PRODUCTO
+    // ==============================
+    if (esSi && session.producto && session.producto !== "GENERAL_ADOQUINES") {
+      await enviarImagenes(from, session.producto);
+      return res.sendStatus(200);
+    }
+
+    // ==============================
+    // 🧱 ADOQUINES GENERAL
+    // ==============================
+    if (session.producto === "GENERAL_ADOQUINES") {
+      await enviarMensaje(from, "manejamos varios 👍 quieres que te muestre todos?");
+      session.esperando = "mostrar_catalogo";
+      return res.sendStatus(200);
+    }
+
+    // ==============================
+    // 🤖 IA SOLO SI NO HAY CASO
     // ==============================
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
@@ -276,14 +246,16 @@ app.post("/webhook", async (req, res) => {
           {
             role: "system",
             content: `
-Eres Ana de una ladrillera.
+Eres Ana de Ladrillera La Toscana.
 
-Hablas como persona real:
+Hablas natural, como persona real.
+
 - corta
-- natural
 - amable
 - no robot
 - ayudas fácil
+- no repites preguntas
+- si no entiendes: "qué pena, no te entendí bien"
 `
           },
           { role: "user", content: text }
@@ -291,13 +263,16 @@ Hablas como persona real:
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          "Content-Type": "application/json"
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
         }
       }
     );
 
-    await enviarMensaje(from, response.data.choices[0].message.content);
+    const reply = response.data.choices[0].message.content;
+
+    await new Promise(r => setTimeout(r, Math.random() * 2000 + 1000));
+
+    await enviarMensaje(from, reply);
 
     res.sendStatus(200);
 
