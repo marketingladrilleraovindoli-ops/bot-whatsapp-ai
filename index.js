@@ -35,9 +35,10 @@ function detectarProducto(texto) {
 
     if (texto.includes(nombre)) return key;
 
-    // detectar por medidas
-    if (texto.includes("20x10x6") && key.includes("20x10x6")) return key;
+    if (texto.includes("20x10x3") && key.includes("20x10x3")) return key;
     if (texto.includes("20x10x4") && key.includes("20x10x4")) return key;
+    if (texto.includes("20x10x6") && key.includes("20x10x6")) return key;
+    if (texto.includes("20x10x8") && key.includes("20x10x8")) return key;
   }
 
   if (texto.includes("adoquin")) return "GENERAL_ADOQUINES";
@@ -46,7 +47,7 @@ function detectarProducto(texto) {
 }
 
 // ==============================
-// 📤 MENSAJE
+// 📤 MENSAJE TEXTO
 // ==============================
 async function enviarMensaje(to, body) {
   await axios.post(
@@ -71,7 +72,7 @@ async function enviarImagenes(to, producto) {
   const item = catalogo[producto];
 
   if (!item?.imagenes?.length) {
-    await enviarMensaje(to, "no tengo imágenes cargadas aún 😅");
+    await enviarMensaje(to, "aún no tengo imágenes cargadas 😅");
     return;
   }
 
@@ -147,7 +148,7 @@ app.post("/webhook", async (req, res) => {
 
     text = normalizarTexto(text);
 
-    // ❌ duplicados
+    // ❌ evitar duplicados
     if (processedMessages.has(msgId)) return res.sendStatus(200);
     processedMessages.add(msgId);
 
@@ -169,13 +170,26 @@ app.post("/webhook", async (req, res) => {
     if (productoDetectado) session.producto = productoDetectado;
 
     const esSi = ["si", "sí", "dale", "ok", "listo"].includes(text);
-    const quiereTodo = text.includes("todo") || text.includes("todos");
-    const quiereVer = text.includes("ver") || text.includes("muestra");
+
+    const quiereImagen =
+      text.includes("imagen") ||
+      text.includes("imagenes") ||
+      text.includes("foto") ||
+      text.includes("fotos") ||
+      text.includes("ver") ||
+      text.includes("muestra") ||
+      text.includes("mostrar") ||
+      text.includes("manda");
+
+    const quiereTodo =
+      text.includes("todo") ||
+      text.includes("todos") ||
+      text.includes("catalogo");
 
     // ==============================
     // 📦 MOSTRAR TODO
     // ==============================
-    if (quiereTodo || text.includes("catalogo")) {
+    if (quiereTodo) {
       await mostrarCatalogo(from);
       session.esperando = "elegir_producto";
       return res.sendStatus(200);
@@ -191,16 +205,29 @@ app.post("/webhook", async (req, res) => {
     }
 
     // ==============================
-    // 🖼️ MOSTRAR PRODUCTO
+    // 🔥 IMÁGENES DIRECTAS
     // ==============================
-    if ((quiereVer || esSi) && session.producto && session.producto !== "GENERAL_ADOQUINES") {
+    if (session.producto && quiereImagen) {
+      if (session.producto === "GENERAL_ADOQUINES") {
+        await mostrarCatalogo(from);
+        session.esperando = "elegir_producto";
+        return res.sendStatus(200);
+      }
+
       await enviarImagenes(from, session.producto);
-      session.esperando = null;
       return res.sendStatus(200);
     }
 
     // ==============================
-    // 🧱 SI SOLO DICE ADOQUINES
+    // 🔥 SI DICE "SI" Y YA HAY PRODUCTO
+    // ==============================
+    if (esSi && session.producto && session.producto !== "GENERAL_ADOQUINES") {
+      await enviarImagenes(from, session.producto);
+      return res.sendStatus(200);
+    }
+
+    // ==============================
+    // 🧱 ADOQUINES GENERAL
     // ==============================
     if (session.producto === "GENERAL_ADOQUINES") {
       await enviarMensaje(from, "manejamos varios 👍 quieres que te muestre todos?");
@@ -209,7 +236,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     // ==============================
-    // 🤖 IA RESPALDO
+    // 🤖 IA SOLO SI NO HAY CASO
     // ==============================
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
@@ -226,6 +253,8 @@ Hablas natural, como persona real.
 - corta
 - amable
 - no robot
+- ayudas fácil
+- no repites preguntas
 - si no entiendes: "qué pena, no te entendí bien"
 `
           },
