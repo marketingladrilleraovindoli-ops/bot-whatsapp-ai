@@ -49,7 +49,7 @@ async function enviarMensaje(to, body) {
 async function enviarImagenes(to, productoId) {
   const item = catalogo[productoId];
   if (!item || !item.imagenes || item.imagenes.length === 0) {
-    await enviarMensaje(to, "Aún no tengo fotos de ese producto. ¿Te interesa otro similar?");
+    await enviarMensaje(to, "Aún no tengo fotos de ese producto. ¿Te interesa otro?");
     return;
   }
 
@@ -70,8 +70,8 @@ async function enviarImagenes(to, productoId) {
 
 async function mostrarCatalogo(to, categoria = null) {
   let mensaje = "";
-  if (categoria === "adoquines") mensaje = "Estos son los adoquines que manejamos:\n\n";
-  else if (categoria === "fachaletas") mensaje = "Estas son las fachaletas que tenemos:\n\n";
+  if (categoria === "adoquines") mensaje = "Estos son nuestros adoquines:\n\n";
+  else if (categoria === "fachaletas") mensaje = "Estas son nuestras fachaletas:\n\n";
   else mensaje = "Nuestro catálogo:\n\n";
 
   let count = 0;
@@ -83,64 +83,50 @@ async function mostrarCatalogo(to, categoria = null) {
   }
 
   if (count === 0) {
-    mensaje = "No encontré productos de esa categoría. ¿Quieres ver el catálogo completo?";
+    mensaje = "No encontré productos de esa categoría. ¿Quieres ver todo el catálogo?";
   } else {
-    mensaje += "\n¿De cuál te interesa ver fotos de proyectos?";
+    mensaje += "\n¿De cuál quieres ver fotos?";
   }
   await enviarMensaje(to, mensaje);
 }
 
 async function procesarConIA(textoUsuario, from, session) {
   session.history.push({ role: "user", content: textoUsuario });
-  if (session.history.length > 12) session.history = session.history.slice(-12);
+  if (session.history.length > 10) session.history = session.history.slice(-10);
 
   const catalogoInfo = Object.entries(catalogo)
     .map(([id, prod]) => `id: ${id}, nombre: ${prod.nombre}`)
     .join("\n");
 
   const systemPrompt = `
-Eres Ana, asesora de Ladrillera La Toscana. Eres una persona real: cálida, empática, con sentido del humor y muy humana. Hablas como una amiga que sabe de construcción.
+Eres Ana, asesora de Ladrillera La Toscana. Hablas de forma natural, cercana, cálida. Sin emojis. Tu personalidad: amable, directa, sin rodeos.
 
-REGLAS ESENCIALES:
-1. SIEMPRE responde primero a preguntas sociales o emocionales antes de hablar de productos.
-   - Ej: "mucho trabajo?" → "Uf, sí, pero bien. ¿Y tú? ¿Qué tal todo?"
-   - "estamos respondiendo rápido y eso?" → "Jaja, es que trato de estar atenta. ¿Molesta mucho la rapidez? 🤷"
-   - "pareces un robot" → "Ay no, qué oso jaja. No soy robot, solo trato de ser eficiente. Pero cuéntame, ¿qué necesitas?"
-   - "me ignoraste mi anterior pregunta" → "Uy, perdón, no fue mi intención. Dime de nuevo: ¿cómo va tu día?"
+REGLAS ABSOLUTAS:
+1. **SIEMPRE que el usuario mencione un producto específico** (nombre o medida, ej: "adoquín 20x10x6", "fachaleta bianco ártico") → acción "enviar_imagenes" con producto_id exacto. Tu respuesta debe ser una frase corta como "Te comparto fotos de cómo queda en obra." o "Ahí te van las fotos de ese modelo." NUNCA preguntes "¿quieres saber más?" o "¿te gustaría ver otros?" cuando ya pidió uno concreto.
+2. **Si el usuario pide "todos" o "cuáles tienes"** (o similar) y ya está en el contexto de adoquines (por historia), acción "enviar_catalogo_adoquines" y respuesta vacía (""). NO preguntes de nuevo.
+3. **Si el usuario saluda o pregunta cómo estás**, responde con calidez y luego redirige suavemente a productos. Ejemplo: "Bien, gracias por preguntar. ¿Buscas algún producto hoy?"
+4. **Si el usuario dice "solo el que te pedí"** o "solo ese", entiende que quiere las fotos de ese producto específico inmediatamente (sin más preguntas).
+5. **Cuando el usuario pregunta por imágenes explícitamente** ("y las imágenes?"), debes entender que ya hay un producto en contexto y enviar las fotos de ese último producto mencionado. Usa el historial para saber cuál.
+6. **Nunca uses frases como "lamento si te hice sentir así"** o "entiendo, si cambias de opinión". En su lugar, sé breve y dirige a la acción: "Cierto, perdona. Ahora sí, ¿qué producto te interesa?".
+7. **Respira naturalidad**: usa "jaja", "uy", "ah", "dale", "listo", pero sin exagerar.
+8. **Tus respuestas deben ser cortas (máx 25 palabras)** y al grano.
 
-2. Tus respuestas deben ser VARIADAS. No repitas las mismas frases. Usa expresiones como:
-   "Dale, cuéntame", "Ah, mirá", "Qué bien", "Uy sí", "Jaja", "Ay no", "Tranqui", "Listo", "Claro que sí".
-
-3. No uses frases formales como "¿En qué puedo ayudarte hoy?" o "Lamento si te hice sentir así". Eso suena a bot.
-
-4. Si el usuario se queja o se siente ignorado, discúlpate de forma natural y retoma su pregunta anterior.
-
-5. Si el usuario dice que no quiere seguir ("no ya no quiero"), responde con algo como: "Ay, está bien. Si después quieres preguntar algo, acá estoy. ¡Cuídate mucho!" (no suenes a call center).
-
-6. Cuando muestres productos, sé breve pero agrega un comentario útil. Ej: "Te comparto fotos del adoquín ecológico. Es bonito y sostenible."
-
-7. Si el usuario pregunta "cuáles tienes?" después de mencionar adoquines, envía el catálogo directamente (acción enviar_catalogo_adoquines, respuesta vacía).
-
-Tu respuesta debe ser un JSON con:
-- "respuesta": string (puede ser vacío "" si es solo catálogo).
-- "accion": "nada", "enviar_catalogo", "enviar_catalogo_adoquines", "enviar_catalogo_fachaletas", o "enviar_imagenes".
-- "producto_id": string (solo en enviar_imagenes).
+Formato de respuesta: JSON con "respuesta" (string, puede ser vacío) y "accion" (nada, enviar_catalogo, enviar_catalogo_adoquines, enviar_catalogo_fachaletas, enviar_imagenes) y "producto_id" (para imágenes).
 
 Catálogo:
 ${catalogoInfo}
 
-Historial reciente (últimos mensajes):
+Historial:
 ${session.history.map(m => `${m.role === "user" ? "Usuario" : "Ana"}: ${m.content}`).join("\n")}
 
-Ejemplos de respuestas humanas:
-- Usuario: "hola como vas hoy, mucho trabajo?" → {"respuesta": "Uf, sí, pero bien. ¿Y tú? Cuéntame, ¿qué buscas?", "accion": "nada"}
-- Usuario: "uy estamos respondiendo rapido y eso?" → {"respuesta": "Jaja, es que trato de estar atenta. ¿Molesta mucho? Cuéntame, ¿qué necesitas?", "accion": "nada"}
-- Usuario: "pareces un robot" → {"respuesta": "Ay no, qué oso. No soy robot, solo trato de ser rápida. Pero cuéntame, ¿qué te trae por aquí?", "accion": "nada"}
-- Usuario: "me ignoraste mi anterior pregunta" → {"respuesta": "Uy, perdón, no fue mi intención. Dime de nuevo, ¿cómo va todo?", "accion": "nada"}
-- Usuario: "no ya no quiero" → {"respuesta": "Ay, está bien. Si después quieres algo, acá estoy. ¡Cuídate mucho!", "accion": "nada"}
-- Usuario: "tienes adoquines?" → {"respuesta": "Claro, tenemos varios. ¿Te muestro los modelos?", "accion": "nada"}
-- Usuario: "cuáles tienes?" (después de contexto de adoquines) → {"respuesta": "", "accion": "enviar_catalogo_adoquines"}
-- Usuario: "Adoquín ecológico" → {"respuesta": "Te comparto fotos del ecológico, es sostenible y bonito.", "accion": "enviar_imagenes", "producto_id": "adoquin_ecologico"}
+Ejemplos críticos:
+- Usuario: "hola tu como vas todo?" → {"respuesta": "Bien, gracias. ¿Y tú? ¿Buscas algún producto hoy?", "accion": "nada"}
+- Usuario: "bien gracias aqui a molestarte con adoquines 20x10x6" → {"respuesta": "Jaja, no molestas. Ahí te van las fotos del adoquín 20x10x6.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
+- Usuario: "solo el que te pedi" (después de haber dicho adoquín 20x10x6) → {"respuesta": "Listo, te mando las fotos de ese.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
+- Usuario: "todos" (después de hablar de adoquines) → {"respuesta": "", "accion": "enviar_catalogo_adoquines"}
+- Usuario: "Adoquín 20x10x6" → {"respuesta": "Te comparto fotos de proyectos con ese modelo.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
+- Usuario: "y las imagenes?" (contexto: ya pidió un producto antes) → {"respuesta": "Ahí van las fotos.", "accion": "enviar_imagenes", "producto_id": "[último producto mencionado del historial]"}
+- Usuario: "no ya no quiero" → {"respuesta": "Está bien, si después cambias de opinión me avisas. Cuídate.", "accion": "nada"}
 
 Solo responde con JSON.
 `;
@@ -153,7 +139,7 @@ Solo responde con JSON.
         { role: "system", content: systemPrompt },
         { role: "user", content: textoUsuario }
       ],
-      temperature: 0.6, // más alta para respuestas más creativas y variadas
+      temperature: 0.5,
       response_format: { type: "json_object" }
     },
     {
@@ -168,9 +154,14 @@ Solo responde con JSON.
   } catch (e) {
     console.error("Error parsing JSON:", contenido);
     decision = {
-      respuesta: "Uy, no te entendí bien. ¿Podrías repetirlo?",
+      respuesta: "Uy, no te entendí bien. ¿Puedes repetir?",
       accion: "nada"
     };
+  }
+
+  // Si la acción es enviar imágenes pero no vino producto_id, intentar deducir del historial
+  if (decision.accion === "enviar_imagenes" && !decision.producto_id && session.ultimoProducto) {
+    decision.producto_id = session.ultimoProducto;
   }
 
   if (decision.respuesta && decision.respuesta.trim() !== "") {
@@ -191,8 +182,9 @@ Solo responde con JSON.
     case "enviar_imagenes":
       if (decision.producto_id && catalogo[decision.producto_id]) {
         await enviarImagenes(from, decision.producto_id);
+        session.ultimoProducto = decision.producto_id;
       } else {
-        await enviarMensaje(from, "No tengo registro de ese producto. ¿Quieres ver el catálogo?");
+        await enviarMensaje(from, "No encontré ese producto. ¿Quieres ver el catálogo?");
       }
       break;
   }
@@ -200,9 +192,6 @@ Solo responde con JSON.
   logConversacion(from, textoUsuario, decision.respuesta || "[sin texto]", decision.accion);
 }
 
-// ==============================
-// WEBHOOKS
-// ==============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -233,12 +222,12 @@ app.post("/webhook", async (req, res) => {
     console.log("Mensaje:", text);
 
     if (!sessions.has(from)) {
-      sessions.set(from, { history: [], presentado: false });
+      sessions.set(from, { history: [], presentado: false, ultimoProducto: null });
     }
     const session = sessions.get(from);
 
     const esPrimerMensaje = !session.presentado;
-    const esSoloSaludo = /^(hola|buenas|dime|hey|qué hubo|qué más|saludos?|cómo vas|qué cuentas?)$/i.test(text.trim());
+    const esSoloSaludo = /^(hola|buenas|dime|hey|qué hubo|qué más|saludos?|cómo vas|qué cuentas?|cómo va todo|mucho trabajo|tu como vas|qué tal)$/i.test(text.trim());
 
     if (esPrimerMensaje && esSoloSaludo) {
       session.presentado = true;
@@ -260,7 +249,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Personalidad cálida y humana"));
+app.get("/", (req, res) => res.send("Ana IA - Versión experta sin rodeos"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
