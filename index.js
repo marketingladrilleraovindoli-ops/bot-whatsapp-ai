@@ -14,6 +14,7 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 const sessions = new Map();
 const processedMessages = new Set();
 
+// Estado inicial del pedido
 const defaultPedido = {
   productoId: null,
   productoNombre: null,
@@ -23,17 +24,7 @@ const defaultPedido = {
   tonosDisponibles: []
 };
 
-function logConversacion(from, userMsg, botResp, accion) {
-  const logLine = JSON.stringify({
-    timestamp: new Date().toISOString(),
-    usuario: from,
-    mensaje_usuario: userMsg,
-    respuesta_bot: botResp,
-    accion_tomada: accion
-  }) + "\n";
-  fs.appendFileSync("conversaciones.log", logLine, "utf8");
-}
-
+// Función para limpiar el texto
 function normalizarTexto(texto) {
   return texto
     .toLowerCase()
@@ -42,6 +33,7 @@ function normalizarTexto(texto) {
     .trim();
 }
 
+// Función para enviar mensajes
 async function enviarMensaje(to, body) {
   await axios.post(
     `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -56,6 +48,7 @@ async function enviarMensaje(to, body) {
   );
 }
 
+// Envío de imágenes
 async function enviarImagenes(to, productoId) {
   const item = catalogo[productoId];
   if (!item || !item.imagenes || item.imagenes.length === 0) {
@@ -79,6 +72,7 @@ async function enviarImagenes(to, productoId) {
   return true;
 }
 
+// ***** FUNCIÓN CORREGIDA: Manejo de imágenes y seguimiento *****
 async function enviarImagenesConSeguimiento(to, productoId, session) {
   const item = catalogo[productoId];
   if (!item) {
@@ -89,36 +83,47 @@ async function enviarImagenesConSeguimiento(to, productoId, session) {
   const ok = await enviarImagenes(to, productoId);
   if (!ok) return false;
 
+  // Guardar datos
   session.pedido.productoId = productoId;
   session.pedido.productoNombre = item.nombre;
   session.pedido.tonosDisponibles = item.tonos || [];
 
-  // Orden: primero tonalidad (si hay), luego cantidad, luego ubicación
+  // 1. Primero Color
   if (session.pedido.tonosDisponibles.length > 0 && !session.pedido.tonalidad) {
     await enviarMensaje(to, `Qué bonito, ¿de qué color lo quieres? Tenemos ${session.pedido.tonosDisponibles.join(", ")}.`);
     return true;
   }
+  // 2. Luego Cantidad (¡Esto faltaba en el log!)
   if (!session.pedido.cantidad) {
-    await enviarMensaje(to, "Dime cuántas unidades necesitas así te ayudo con el precio. (ej: 10.000)");
+    await enviarMensaje(to, "Dime cuántas unidades necesitas así te ayudo con el precio. (Ej: 10.000)");
     return true;
   }
+  // 3. Finalmente Ubicación
   if (!session.pedido.ubicacion) {
     await preguntarUbicacion(to, session);
     return true;
   }
   // Si ya tiene todo
-  await enviarMensaje(to, `Listo, ya tengo tu pedido: ${session.pedido.productoNombre}, ${session.pedido.tonalidad || "color a definir"}, ${session.pedido.cantidad} unidades, envío a ${session.pedido.ubicacion}. ¿Quieres que te prepare una cotización formal?`);
+  await enviarMensaje(to, `Listo, ya tengo tu pedido: ${session.pedido.productoNombre}, ${session.pedido.tonalidad || "color a definir"}, ${session.pedido.cantidad} unidades, envío a ${session.pedido.ubicacion}. ¿Quieres que te prepare la cotización?`);
   session.cotizacionOfrecida = true;
   return true;
 }
 
+// ***** FUNCIÓN CORREGIDA: Preguntar Ubicación *****
 async function preguntarUbicacion(to, session) {
-  // Si ya tiene ubicación, no volver a preguntar
   if (session.pedido.ubicacion) return;
 
-  await enviarMensaje(to, "¿Dónde te lo mandamos? Si es en Némocon, puedes pasar a recoger o te lo enviamos, comparte tu ubicación por Maps. Si es en otro lado, escríbeme la dirección completa.");
+  const ubicacionActual = session.pedido.ubicacion;
+  
+  if (!ubicacionActual) {
+    await enviarMensaje(to, "¿Dónde te lo mandamos? Si es en Némocon, puedes pasar a recoger o te lo enviamos. Dame la dirección completa.");
+  } else {
+    // Si ya se había registrado una ubicación, evitamos preguntar de nuevo
+    await enviarMensaje(to, `Quedó registrado: ${ubicacionActual}.`);
+  }
 }
 
+// ***** FUNCIÓN CORREGIDA: Mostrar Catálogo de forma humana *****
 async function mostrarCatalogoHumano(to, categoria = null) {
   let productos = [];
   if (categoria === "adoquines") {
@@ -142,6 +147,7 @@ async function mostrarCatalogoHumano(to, categoria = null) {
   await enviarMensaje(to, mensaje);
 }
 
+// Detección de cantidades
 function detectarCantidad(texto) {
   const match = texto.match(/(\d{1,3}(?:[.,]\d{3})*(?:\.\d+)?)/);
   if (match) {
@@ -152,15 +158,18 @@ function detectarCantidad(texto) {
   return null;
 }
 
+// ***** PROCESADOR IA CORREGIDO *****
 async function procesarConIA(textoUsuario, from, session) {
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
+  // Detectar cantidad automáticamente
   const nuevaCantidad = detectarCantidad(textoUsuario);
   if (nuevaCantidad !== null && !session.pedido.cantidad) {
     session.pedido.cantidad = nuevaCantidad;
   }
 
+  // Estado del pedido para la IA
   const estadoPedido = `
 ESTADO DEL PEDIDO:
 - Producto: ${session.pedido.productoNombre || "ninguno"}
@@ -185,16 +194,14 @@ Eres Ana, una asesora de ventas de Ladrillera La Toscana (Némocon, Colombia). H
 ${estadoPedido}
 
 REGLAS ESTRICTAS:
-- Si el usuario saluda, responde breve y pregunta qué busca (adoquines, fachaletas). No muestres catálogo a menos que te lo pida.
-- Si el usuario dice "muéstrame" o "cuáles tienes" → acción "mostrar_adoquines" o "mostrar_fachaletas" según corresponda.
-- Si el usuario da el nombre de un producto (ej: "20x10x8", "corbatín") → acción "enviar_imagenes".
-- Después de imágenes, sigue el orden: si hay tonos, pregunta color; luego cantidad; luego ubicación.
-- Cuando el usuario da una cantidad, actualiza con "actualizar_cantidad" y CONTINÚA con la ubicación (no preguntes cantidad de nuevo).
-- Cuando el usuario da ubicación (ciudad, dirección, "Némocon", "recojo en planta"), actualiza con "actualizar_ubicacion" y NO VUELVAS A PREGUNTAR LA UBICACIÓN.
-- Si el usuario dice "Némocon", pregunta si quiere que le envíen la ubicación por Maps o si pasa a recoger.
-- Si dice otra ciudad, pide dirección específica.
-- NUNCA repitas la misma pregunta.
-- Las confirmaciones deben ser naturales: "Listo", "Ok", "Perfecto", "Quedó eso". NUNCA "anotado".
+- Si el usuario saluda, responde breve y pregunta qué busca (adoquines, fachaletas).
+- Si el usuario dice "muéstrame" o "cuáles tienes" → acción "mostrar_adoquines" o "mostrar_fachaletas".
+- Si el usuario da el nombre de un producto → acción "enviar_imagenes".
+- Después de imágenes, sigue el orden: color → cantidad → ubicación.
+- Cuando el usuario da una cantidad, actualiza con "actualizar_cantidad" y pasa a preguntar ubicación.
+- Cuando el usuario da ubicación (ciudad, dirección, "Némocon"), actualiza con "actualizar_ubicacion".
+- **SI EL USUARIO PIDIÓ LA UBICACIÓN POR MAPS**, DEBES PROPORCIONAR EL ENLACE CORRECTO: "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6"
+- NUNCA repitas la misma pregunta y no envíes múltiples mensajes seguidos innecesariamente.
 
 Responde SOLO con JSON:
 {
@@ -236,11 +243,13 @@ Historial: ${session.history.map(m => `${m.role === "user" ? "Cliente" : "Ana"}:
     };
   }
 
+  // Enviar respuesta textual
   if (decision.respuesta && decision.respuesta.trim() !== "") {
     await enviarMensaje(from, decision.respuesta);
     session.history.push({ role: "assistant", content: decision.respuesta });
   }
 
+  // Procesar acciones
   switch (decision.accion) {
     case "mostrar_adoquines":
       await mostrarCatalogoHumano(from, "adoquines");
@@ -258,7 +267,6 @@ Historial: ${session.history.map(m => `${m.role === "user" ? "Cliente" : "Ana"}:
     case "actualizar_tonalidad":
       if (decision.tonalidad_valor) {
         session.pedido.tonalidad = decision.tonalidad_valor;
-        // Confirmación natural
         await enviarMensaje(from, `Listo, ${decision.tonalidad_valor}.`);
         if (!session.pedido.cantidad) {
           await enviarMensaje(from, "¿Cuántas unidades quieres?");
@@ -283,43 +291,42 @@ Historial: ${session.history.map(m => `${m.role === "user" ? "Cliente" : "Ana"}:
     case "actualizar_ubicacion":
       if (decision.ubicacion_valor && !session.pedido.ubicacion) {
         session.pedido.ubicacion = decision.ubicacion_valor;
-        // Si es Némocon, ofrecer mapa
+        await enviarMensaje(from, `Quedó registrado: ${decision.ubicacion_valor}.`);
+        
+        // Si la ubicación es Némocon, ofrecer el Maps REAL
         if (decision.ubicacion_valor.toLowerCase().includes("némocon") || decision.ubicacion_valor.toLowerCase() === "nemocon") {
-          await enviarMensaje(from, "Perfecto, como eres de Némocon, puedes pasar a recoger a la planta o te enviamos. ¿Te comparto la ubicación por Maps?");
-          // Aquí podrías enviar un botón o un link de Maps si quieres
-        } else {
-          await enviarMensaje(from, `Quedó registrado: ${decision.ubicacion_valor}.`);
+          await enviarMensaje(from, "Perfecto, aquí está la ubicación exacta para que pases a recoger o coordines el envío:");
+          await enviarMensaje(from, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6"); // Enlace REAL
         }
-        // Ver si falta algo
+        
+        // Verificar si ya tenemos todos los datos para cotizar
         if (session.pedido.productoNombre && session.pedido.cantidad) {
           await enviarMensaje(from, "Listo, ya tengo todo. ¿Quieres la cotización?");
         }
       }
       break;
     default:
-      // nada
       break;
   }
-
-  logConversacion(from, textoUsuario, decision.respuesta || "[acción]", decision.accion);
 }
 
-// ==============================
-// WEBHOOKS
-// ==============================
+// WEBHOOKS de WhatsApp
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
   }
-  res.sendStatus(403);
 });
 
 app.post("/webhook", async (req, res) => {
   try {
-    const value = req.body?.entry?.[0]?.changes?.[0]?.value;
+    const entry = req.body.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
     if (value?.statuses) return res.sendStatus(200);
 
     const message = value?.messages?.[0];
@@ -334,7 +341,7 @@ app.post("/webhook", async (req, res) => {
     processedMessages.add(msgId);
 
     text = normalizarTexto(text);
-    console.log("Mensaje:", text);
+    console.log(`[Mensaje de ${from}]: ${text}`);
 
     if (!sessions.has(from)) {
       sessions.set(from, {
@@ -362,12 +369,12 @@ app.post("/webhook", async (req, res) => {
 
     res.sendStatus(200);
   } catch (error) {
-    console.error("ERROR:", error.response?.data || error.message);
+    console.error("Error en webhook:", error);
     res.sendStatus(200);
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Versión humana mejorada"));
-
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Servidor Ana escuchando en el puerto ${PORT}`);
+});
