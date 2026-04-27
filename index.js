@@ -9,9 +9,6 @@ app.use(express.json());
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 
-// ==============================
-// 🧠 MEMORIA
-// ==============================
 const sessions = new Map();
 const processedMessages = new Set();
 
@@ -21,72 +18,46 @@ const processedMessages = new Set();
 const catalogo = {
   adoquin_20x10x6: {
     nombre: "Adoquín 20x10x6",
-    rendimiento: 50,
-    tonos: ["durazno", "canelo", "matizado"],
     imagenes: [
-      "https://TU-IMG-1.jpg",
-      "https://TU-IMG-2.jpg"
+      "https://via.placeholder.com/500x500?text=Adoquin1",
+      "https://via.placeholder.com/500x500?text=Adoquin2"
     ]
   },
 
   adoquin_20x10x4: {
     nombre: "Adoquín 20x10x4",
-    rendimiento: 50,
-    tonos: ["durazno", "canelo", "matizado"],
     imagenes: [
-      "https://TU-IMG-1.jpg",
-      "https://TU-IMG-2.jpg"
-    ]
-  },
-
-  fachaleta_toscano: {
-    nombre: "Fachaleta Toscano",
-    imagenes: [
-      "https://TU-IMG-1.jpg",
-      "https://TU-IMG-2.jpg"
-    ]
-  },
-
-  fachaleta_bianco: {
-    nombre: "Fachaleta Bianco Ártico",
-    imagenes: [
-      "https://TU-IMG-1.jpg",
-      "https://TU-IMG-2.jpg"
+      "https://via.placeholder.com/500x500?text=Adoquin3",
+      "https://via.placeholder.com/500x500?text=Adoquin4"
     ]
   }
 };
 
-// 📄 PDF
-const CATALOGO_PDF = "https://TU-CATALOGO.pdf";
-
 // ==============================
-// 🧠 NORMALIZAR TEXTO
+// NORMALIZAR TEXTO
 // ==============================
-function normalizarTexto(texto) {
+function normalizar(texto) {
   return texto
     .toLowerCase()
-    .replace(/doquin|doquines|adokines|adoquines|adoqin/g, "adoquin")
-    .replace(/fachada|fachadas/g, "fachaleta");
+    .replace(/doquin|adoquines|adoqin|adokines/g, "adoquin");
 }
 
 // ==============================
-// 🔍 DETECTAR PRODUCTO
+// DETECTAR PRODUCTO
 // ==============================
 function detectarProducto(texto) {
   if (texto.includes("20x10x6")) return "adoquin_20x10x6";
   if (texto.includes("20x10x4")) return "adoquin_20x10x4";
-  if (texto.includes("toscano")) return "fachaleta_toscano";
-  if (texto.includes("bianco")) return "fachaleta_bianco";
 
-  if (texto.includes("adoquin")) return "GENERAL_ADOQUIN";
+  if (texto.includes("adoquin")) return "GENERAL";
 
   return null;
 }
 
 // ==============================
-// 📤 MENSAJE
+// ENVIAR TEXTO
 // ==============================
-async function enviarMensaje(to, body) {
+async function enviarTexto(to, body) {
   await axios.post(
     `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
     {
@@ -104,13 +75,13 @@ async function enviarMensaje(to, body) {
 }
 
 // ==============================
-// 🖼️ IMÁGENES
+// ENVIAR IMÁGENES
 // ==============================
 async function enviarImagenes(to, producto) {
   const item = catalogo[producto];
   if (!item) return;
 
-  await enviarMensaje(to, `mira ${item.nombre} 👇`);
+  await enviarTexto(to, `mira 👇`);
 
   for (const img of item.imagenes) {
     await axios.post(
@@ -129,27 +100,25 @@ async function enviarImagenes(to, producto) {
       }
     );
 
-    await new Promise(r => setTimeout(r, 700));
+    await new Promise(r => setTimeout(r, 600));
   }
 }
 
 // ==============================
-// ✅ VERIFY
+// VERIFY
 // ==============================
 app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
+  if (
+    req.query["hub.mode"] === "subscribe" &&
+    req.query["hub.verify_token"] === VERIFY_TOKEN
+  ) {
+    return res.send(req.query["hub.challenge"]);
   }
-
   res.sendStatus(403);
 });
 
 // ==============================
-// 🚀 WEBHOOK
+// WEBHOOK
 // ==============================
 app.post("/webhook", async (req, res) => {
   try {
@@ -157,155 +126,118 @@ app.post("/webhook", async (req, res) => {
 
     if (value?.statuses) return res.sendStatus(200);
 
-    const message = value?.messages?.[0];
-    if (!message) return res.sendStatus(200);
+    const msg = value?.messages?.[0];
+    if (!msg) return res.sendStatus(200);
 
-    const from = message.from;
-    const msgId = message.id;
+    const from = msg.from;
+    const id = msg.id;
 
-    let text = message.text?.body;
+    let text = msg.text?.body;
     if (!text) return res.sendStatus(200);
 
-    text = normalizarTexto(text);
+    text = normalizar(text);
 
-    // ❌ duplicados
-    if (processedMessages.has(msgId)) return res.sendStatus(200);
-    processedMessages.add(msgId);
+    if (processedMessages.has(id)) return res.sendStatus(200);
+    processedMessages.add(id);
 
     console.log("Mensaje:", text);
 
     // ==============================
-    // 🧠 SESIÓN
+    // SESIÓN
     // ==============================
     if (!sessions.has(from)) {
-      sessions.set(from, { producto: null });
+      sessions.set(from, {
+        producto: null,
+        esperandoImagen: false
+      });
     }
 
     const session = sessions.get(from);
 
     // ==============================
-    // 🔍 INTENCIÓN
+    // INTENCIÓN
     // ==============================
-    const productoDetectado = detectarProducto(text);
-    if (productoDetectado) session.producto = productoDetectado;
+    const producto = detectarProducto(text);
+    if (producto) session.producto = producto;
 
-    const esAfirmacion = ["si", "sí", "dale", "ok"].includes(text);
+    const esSi = ["si", "sí", "dale", "ok"].includes(text);
 
     const quiereTodo =
       text.includes("todo") ||
-      text.includes("todos") ||
       text.includes("cuales") ||
       text.includes("tienen");
 
-    const quiereImagen =
-      text.includes("foto") ||
-      text.includes("imagen") ||
-      text.includes("muestra") ||
-      text.includes("ver");
-
-    const quierePDF =
-      text.includes("pdf") ||
-      text.includes("catalogo");
+    const quiereVer =
+      text.includes("ver") ||
+      text.includes("mostrar") ||
+      text.includes("foto");
 
     // ==============================
-    // 📄 PDF
-    // ==============================
-    if (quierePDF) {
-      await axios.post(
-        `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
-        {
-          messaging_product: "whatsapp",
-          to: from,
-          type: "document",
-          document: {
-            link: CATALOGO_PDF,
-            filename: "catalogo.pdf"
-          }
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-            "Content-Type": "application/json"
-          }
-        }
-      );
-
-      return res.sendStatus(200);
-    }
-
-    // ==============================
-    // 📦 MOSTRAR TODO
+    // MOSTRAR TODO
     // ==============================
     if (quiereTodo) {
-      let msg = "manejamos:\n\n";
+      let lista = "manejamos estos:\n\n";
 
-      for (const key in catalogo) {
-        msg += `• ${catalogo[key].nombre}\n`;
-      }
+      Object.values(catalogo).forEach(p => {
+        lista += `• ${p.nombre}\n`;
+      });
 
-      msg += "\nsi quieres fotos dime cuál 👍";
+      lista += "\ndime cuál quieres ver 👍";
 
-      await enviarMensaje(from, msg);
+      await enviarTexto(from, lista);
       return res.sendStatus(200);
     }
 
     // ==============================
-    // 🖼️ IMÁGENES
+    // RESPUESTA INTELIGENTE
     // ==============================
-    if (quiereImagen || esAfirmacion) {
 
-      if (!session.producto || session.producto === "GENERAL_ADOQUIN") {
-        let msg = "tengo estas referencias:\n\n";
+    // 👉 usuario dice "adoquines"
+    if (session.producto === "GENERAL") {
+      await enviarTexto(
+        from,
+        "sí 👍 manejamos varios\nquieres que te muestre referencias?"
+      );
 
-        for (const key in catalogo) {
-          msg += `• ${catalogo[key].nombre}\n`;
-        }
+      session.esperandoImagen = true;
+      return res.sendStatus(200);
+    }
 
-        msg += "\ndime cuál quieres ver 👍";
+    // 👉 usuario dijo SI después
+    if (esSi && session.esperandoImagen) {
+      let lista = "tengo estos:\n\n";
 
-        await enviarMensaje(from, msg);
-        return res.sendStatus(200);
-      }
+      Object.values(catalogo).forEach(p => {
+        lista += `• ${p.nombre}\n`;
+      });
 
+      lista += "\ndime cuál quieres ver 👍";
+
+      await enviarTexto(from, lista);
+
+      session.esperandoImagen = false;
+      return res.sendStatus(200);
+    }
+
+    // 👉 usuario eligió producto
+    if (catalogo[session.producto]) {
       await enviarImagenes(from, session.producto);
       return res.sendStatus(200);
     }
 
     // ==============================
-    // 💬 RESPUESTA BASE
+    // FALLBACK HUMANO
     // ==============================
-    let reply = null;
-
-    if (session.producto === "GENERAL_ADOQUIN") {
-      reply = "tenemos varios 👍 quieres que te muestre referencias?";
-    }
-
-    else if (catalogo[session.producto] && !esAfirmacion) {
-      reply = `${catalogo[session.producto].nombre} 👍`;
-    }
-
-    if (!reply) {
-      reply = "qué necesitas? 👍";
-    }
-
-    // delay humano
-    await new Promise(r => setTimeout(r, Math.random() * 2000 + 1000));
-
-    await enviarMensaje(from, reply);
-
+    await enviarTexto(from, "hola 😊 en qué te ayudo?");
     res.sendStatus(200);
 
-  } catch (error) {
-    console.error("ERROR:", error.response?.data || error.message);
+  } catch (err) {
+    console.error(err.response?.data || err.message);
     res.sendStatus(200);
   }
 });
 
 // ==============================
-app.get("/", (req, res) => {
-  res.send("Ana PRO activa 🚀");
-});
-
 app.listen(process.env.PORT || 3000, () => {
   console.log("Servidor activo");
 });
