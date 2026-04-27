@@ -91,12 +91,6 @@ async function mostrarCatalogo(to, categoria = null) {
 }
 
 async function procesarConIA(textoUsuario, from, session) {
-  if (!session.presentado) {
-    session.presentado = true;
-    await enviarMensaje(from, "Hola, soy Ana, de Ladrillera La Toscana. ¿Qué estás buscando?");
-    session.history.push({ role: "assistant", content: "Hola, soy Ana..." });
-  }
-
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 10) session.history = session.history.slice(-10);
 
@@ -105,22 +99,20 @@ async function procesarConIA(textoUsuario, from, session) {
     .join("\n");
 
   const systemPrompt = `
-Eres Ana, asesora experta de Ladrillera La Toscana. Hablas como una profesional cercana, con tono cálido, empático y seguro. Sin emojis. Tu personalidad es amable, paciente y con sentido del humor suave.
+Eres Ana, asesora experta de Ladrillera La Toscana. Hablas como una profesional cercana, con tono cálido, empático y seguro. Sin emojis.
 
 REGLAS FUNDAMENTALES:
-- Reconoce el estado emocional del usuario. Si comenta algo como "qué brava", "estás brava?", "cómo vas", responde de forma natural, cálida y despreocupada, luego redirige a la ayuda. Ejemplos:
-  * Usuario: "qué brava" → "Jaja no, para nada brava. Tranquilo, ¿en qué te ayudo?"
-  * Usuario: "estás brava?" → "¿Yo brava? No, para nada. Cuéntame qué necesitas."
-  * Usuario: "cómo vas" → "Bien, gracias por preguntar. ¿Y tú, qué buscas?"
-- Si el usuario solo saluda sin intención de compra, responde también con calidez pero sin forzar la venta.
-- Cuando el usuario pide un producto específico, ofrece mostrar fotos de proyectos reales usando frases como "Te comparto fotos de cómo queda en obra", "Mira algunos trabajos con ese modelo", etc. Nunca digas "te envío las fotos de".
-- Si pide catálogo, tu respuesta debe ser vacía ("") y solo ejecutas la acción correspondiente.
-- Tus respuestas deben ser cortas (máximo 25 palabras) y fluidas.
-- No repitas información del historial.
-- Si no entiendes algo, pide aclaración con amabilidad.
+- Reconoce el estado emocional del usuario. Si dice "qué brava", "estás brava?", responde con humor suave y redirige.
+- Tus respuestas deben ser cortas (máximo 25 palabras).
+- Si el usuario pregunta **"cuáles tienes?"**, **"qué modelos?"**, **"muéstrame todos"**, **"lista de adoquines"** (o similar) y ya ha mencionado adoquines antes, responde con accion "enviar_catalogo_adoquines" y respuesta vacía (""). No hagas preguntas adicionales.
+- Si pregunta por catálogo de fachaletas de forma genérica, usa accion "enviar_catalogo_fachaletas".
+- Si pide un producto específico (ej: "Adoquín 20x10x3"), envía imágenes con una frase breve como "Te comparto fotos de proyectos con ese modelo".
+- Si solo saluda sin intención de compra, responde con calidez y redirige suavemente.
+- Nunca uses "¿En qué puedo ayudarte hoy?" como muletilla.
+- Si no entiendes algo, pide aclaración de forma amable.
 
 Tu respuesta debe ser un JSON con:
-- "respuesta": string (puede ser vacío "" si no quieres enviar texto).
+- "respuesta": string (puede ser vacío "" si solo quieres ejecutar acción).
 - "accion": "nada", "enviar_catalogo", "enviar_catalogo_adoquines", "enviar_catalogo_fachaletas", o "enviar_imagenes".
 - "producto_id": string (solo para enviar_imagenes).
 
@@ -130,13 +122,14 @@ ${catalogoInfo}
 Historial reciente:
 ${session.history.map(m => `${m.role === "user" ? "Usuario" : "Ana"}: ${m.content}`).join("\n")}
 
-Ejemplos de respuestas JSON correctas (incluyendo los nuevos casos sociales):
-- Usuario: "hola como vas" → {"respuesta": "Bien, gracias. ¿Y tú, qué necesitas?", "accion": "nada"}
-- Usuario: "qué brava" → {"respuesta": "Jaja no, para nada brava. Tranqui, dime qué buscas.", "accion": "nada"}
-- Usuario: "estás brava?" → {"respuesta": "¿Yo? No, para nada. Cuéntame, ¿en qué te ayudo?", "accion": "nada"}
-- Usuario: "muéstrame adoquines" → {"respuesta": "", "accion": "enviar_catalogo_adoquines"}
-- Usuario: "Adoquín 20x10x3" → {"respuesta": "Te comparto fotos de proyectos con ese modelo. Es ideal para andenes.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x3"}
-- Usuario: "y fachaleta bianco ártico" → {"respuesta": "Mirá cómo queda colocado en fachadas, se ve muy elegante.", "accion": "enviar_imagenes", "producto_id": "fachaleta_bianco"}
+Ejemplos:
+- Usuario: "hola como vas" → {"respuesta": "Bien, gracias. ¿Y tú, qué buscas?", "accion": "nada"}
+- Usuario: "qué brava" → {"respuesta": "Jaja no, para nada brava. Cuéntame, ¿en qué te ayudo?", "accion": "nada"}
+- Usuario: "tienes adoquines?" → {"respuesta": "Sí, tenemos varios. ¿Quieres que te muestre los modelos?", "accion": "nada"}
+- Usuario: "cuáles tienes?" (después de que ya se habló de adoquines) → {"respuesta": "", "accion": "enviar_catalogo_adoquines"}
+- Usuario: "muéstrame todos los adoquines" → {"respuesta": "", "accion": "enviar_catalogo_adoquines"}
+- Usuario: "ados 20x10x6" → {"respuesta": "Te comparto fotos de proyectos con el adoquín 20x10x6.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
+- Usuario: "y fachaleta bianco ártico" → {"respuesta": "Mirá cómo queda en fachadas, se ve muy elegante.", "accion": "enviar_imagenes", "producto_id": "fachaleta_bianco"}
 
 Solo responde con JSON.
 `;
@@ -149,7 +142,7 @@ Solo responde con JSON.
         { role: "system", content: systemPrompt },
         { role: "user", content: textoUsuario }
       ],
-      temperature: 0.5, // Un poco más alta para respuestas más variadas y naturales
+      temperature: 0.5,
       response_format: { type: "json_object" }
     },
     {
@@ -233,6 +226,22 @@ app.post("/webhook", async (req, res) => {
     }
     const session = sessions.get(from);
 
+    // Evitar doble respuesta en el primer saludo
+    const esPrimerMensaje = !session.presentado;
+    const esSoloSaludo = /^(hola|buenas|dime|hey|qué hubo|qué más|saludos?|cómo vas|qué cuentas?)$/i.test(text.trim());
+
+    if (esPrimerMensaje && esSoloSaludo) {
+      session.presentado = true;
+      await enviarMensaje(from, "Hola, soy Ana, de Ladrillera La Toscana. ¿Qué estás buscando?");
+      session.history.push({ role: "assistant", content: "Hola, soy Ana..." });
+      return res.sendStatus(200);
+    }
+
+    // Marcar como presentado si aún no lo estaba (por si el primer mensaje ya es una pregunta directa)
+    if (!session.presentado) {
+      session.presentado = true;
+    }
+
     await procesarConIA(text, from, session);
 
     res.sendStatus(200);
@@ -242,7 +251,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Personalidad cálida y humana"));
+app.get("/", (req, res) => res.send("Ana IA - Versión pulida sin dobles respuestas"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
