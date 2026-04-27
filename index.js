@@ -46,38 +46,12 @@ async function enviarMensaje(to, body) {
   );
 }
 
+// Envía solo las imágenes, sin texto adicional (el texto ya lo envió la IA)
 async function enviarImagenes(to, productoId) {
   const item = catalogo[productoId];
   if (!item || !item.imagenes || item.imagenes.length === 0) {
-    await enviarMensaje(to, "Ay, aún no tengo fotos de eso 😅. Pero te puedo mostrar otras opciones.");
+    await enviarMensaje(to, "Ay, aún no tengo fotos de eso. ¿Te muestro otro?");
     return;
-  }
-
-  // Frases naturales al enviar fotos (variadas)
-  const frasesEnvio = [
-    `Ahí te mando las fotos de ${item.nombre}:`,
-    `Mirá, así se ve ${item.nombre}:`,
-    `Toma, ${item.nombre}:`,
-    `Justo ahora te muestro ${item.nombre}:`
-  ];
-  const frase = frasesEnvio[Math.floor(Math.random() * frasesEnvio.length)];
-  await enviarMensaje(to, frase);
-
-  // Recomendación humana (opcional, a veces va aparte, a veces no)
-  let recomendacion = "";
-  if (productoId.includes("adoquin")) {
-    if (productoId.includes("20x10x3")) recomendacion = "Este es ideales para andenes o zonas peatonales.";
-    else if (productoId.includes("20x10x4")) recomendacion = "Muy usado para entradas de carros livianos, aguanta bien.";
-    else if (productoId.includes("20x10x6")) recomendacion = "Perfecto para calles residenciales o parqueaderos, es el más pedido.";
-    else if (productoId.includes("20x10x8")) recomendacion = "Ese es pa' tráfico pesado o zonas industriales, re resistente.";
-    else if (productoId.includes("ecologico")) recomendacion = "El ecológico filtra agua y es bien resistente, buena opción.";
-    else recomendacion = "Ese tiene buena durabilidad, te va a servir.";
-  } else if (productoId.includes("fachaleta")) {
-    recomendacion = "Quedan muy bonitas en fachadas, dan un toque rústico y elegante.";
-  }
-
-  if (recomendacion) {
-    await enviarMensaje(to, recomendacion);
   }
 
   for (const img of item.imagenes) {
@@ -95,8 +69,13 @@ async function enviarImagenes(to, productoId) {
   }
 }
 
+// Muestra catálogo de forma limpia, con un solo mensaje
 async function mostrarCatalogo(to, categoria = null) {
-  let mensaje = "Mirá, esto es lo que manejamos:\n\n";
+  let mensaje = "";
+  if (categoria === "adoquines") mensaje = "Estos son los adoquines que manejamos:\n\n";
+  else if (categoria === "fachaletas") mensaje = "Estas son las fachaletas que tenemos:\n\n";
+  else mensaje = "Mirá, esto es lo que manejamos:\n\n";
+
   let count = 0;
   for (const key in catalogo) {
     if (categoria === "adoquines" && !key.includes("adoquin")) continue;
@@ -104,6 +83,7 @@ async function mostrarCatalogo(to, categoria = null) {
     mensaje += `- ${catalogo[key].nombre}\n`;
     count++;
   }
+
   if (count === 0) {
     mensaje = "No encontré productos de esa categoría. ¿Quieres ver todo el catálogo?";
   } else {
@@ -113,12 +93,11 @@ async function mostrarCatalogo(to, categoria = null) {
 }
 
 async function procesarConIA(textoUsuario, from, session) {
-  // Primera interacción: presentación natural
+  // Presentación solo una vez
   if (!session.presentado) {
     session.presentado = true;
     await enviarMensaje(from, "Hola, soy Ana, de Ladrillera La Toscana. ¿En qué te ayudo?");
-    // No procesamos el mensaje actual como IA, solo lo guardamos como historial para contexto
-    session.history.push({ role: "assistant", content: "Hola, soy Ana, de Ladrillera La Toscana. ¿En qué te ayudo?" });
+    session.history.push({ role: "assistant", content: "Hola, soy Ana..." });
   }
 
   session.history.push({ role: "user", content: textoUsuario });
@@ -129,20 +108,20 @@ async function procesarConIA(textoUsuario, from, session) {
     .join("\n");
 
   const systemPrompt = `
-Eres Ana, asesora de Ladrillera La Toscana. Hablas como una persona REAL, colombiana (pero no marcada). Usas lenguaje natural, cotidiano, cercano.
+Eres Ana, asesora de Ladrillera La Toscana. Hablas como una persona REAL, colombiana normal. Usas lenguaje cotidiano, cercano, sin emojis.
 
-REGLAS DE PERSONALIDAD (obligatorias):
-- Usa contracciones: "pa'", "pal", "mira", "dale", "listo", "ah", "bueno", "claro", "cómo vas", "sabes qué".
-- Evita estructuras repetitivas como "Te envío las fotos de..." → mejor "Ahí te mando...", "Mirá...", "Toma...".
-- Las recomendaciones deben ir en la misma frase o en un mensaje aparte pero muy corto.
-- Saluda variado: "Hola", "Buenas", "Dime", "¿Qué tal?".
-- Si te preguntan por algo que no tienes, ofrece alternativas de forma amable (no digas "lo siento no manejamos").
-- Cuando muestres fotos, añade algo como "Ahí te las mando...", "Son estas...".
-- No uses nunca: "¿En qué puedo ayudarte hoy?" (suena a bot).
-- Sé breve pero cálida. Si el usuario solo saluda, responde "Hola, ¿qué necesitas?".
-- Aprovecha el historial para no repetir preguntas.
+REGLAS CLAVE:
+- Tus respuestas deben ser MUY CORTAS, de máximo 20 palabras. Nada de frases largas.
+- Nunca repitas información que ya está en el historial.
+- Si el usuario pide un producto específico (ej: "adoquines 20x10x6"), tu respuesta debe ser solo algo como: "Ahí te mando las fotos. Es perfecto para calles." (muy breve).
+- Si pide el catálogo, tu respuesta debe ser vacía (""). Solo ejecutas la acción correspondiente.
+- Usa frases como: "dale", "listo", "mirá", "ahí te las mando", "claro", "sí, tenemos esos".
+- No uses estructuras rígidas. Sé natural.
 
-Tu respuesta debe ser un JSON con: "respuesta" (texto para el usuario), "accion" (puede ser "nada", "enviar_catalogo", "enviar_catalogo_adoquines", "enviar_catalogo_fachaletas", o "enviar_imagenes"), "producto_id" (solo para enviar_imagenes, debe coincidir con id del catálogo).
+Tu respuesta debe ser un JSON con:
+- "respuesta": string (texto que enviarás al usuario, puede ser vacío "" si no quieres enviar nada).
+- "accion": "nada", "enviar_catalogo", "enviar_catalogo_adoquines", "enviar_catalogo_fachaletas", o "enviar_imagenes".
+- "producto_id": string (solo si accion es "enviar_imagenes").
 
 Catálogo:
 ${catalogoInfo}
@@ -150,11 +129,12 @@ ${catalogoInfo}
 Historial reciente:
 ${session.history.map(m => `${m.role === "user" ? "Usuario" : "Ana"}: ${m.content}`).join("\n")}
 
-Ejemplos (respira naturalidad):
-- Usuario: "hola" → {"respuesta": "Hola, dime qué necesitas.", "accion": "nada"}
-- Usuario: "adoquines 20x10x6" → {"respuesta": "Ahí te mando las fotos del adoquín 20x10x6, es perfecto para calles residenciales.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
-- Usuario: "fachaleta arquitectonica" → {"respuesta": "Claro, mira las fachaletas que tenemos.", "accion": "enviar_catalogo_fachaletas"}
-- Usuario: "y precios?" → {"respuesta": "Déjame revisar los precios y te confirmo en un momento. ¿Cuántos metros cuadrados necesitas?", "accion": "nada"}
+Ejemplos:
+- Usuario: "buenos días, tienen adoquines?" → {"respuesta": "Sí, tenemos varios. ¿Buscas alguno en especial?", "accion": "nada"}
+- Usuario: "muéstrame cuales tienes" → {"respuesta": "", "accion": "enviar_catalogo_adoquines"}
+- Usuario: "Adoquín 20x10x3" → {"respuesta": "Ahí te mando las fotos. Es ideal para andenes.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x3"}
+- Usuario: "y fachaleta arquitectonica?" → {"respuesta": "", "accion": "enviar_catalogo_fachaletas"}
+- Usuario: "Fachaleta Bianco Ártico" → {"respuesta": "Linda elección, ahí te van las fotos.", "accion": "enviar_imagenes", "producto_id": "fachaleta_bianco"}
 
 Solo responde con JSON.
 `;
@@ -187,10 +167,13 @@ Solo responde con JSON.
     };
   }
 
-  session.history.push({ role: "assistant", content: decision.respuesta });
+  // Enviar respuesta textual solo si no está vacía
+  if (decision.respuesta && decision.respuesta.trim() !== "") {
+    await enviarMensaje(from, decision.respuesta);
+    session.history.push({ role: "assistant", content: decision.respuesta });
+  }
 
-  await enviarMensaje(from, decision.respuesta);
-
+  // Ejecutar acción (sin enviar texto adicional)
   switch (decision.accion) {
     case "enviar_catalogo":
       await mostrarCatalogo(from);
@@ -205,12 +188,12 @@ Solo responde con JSON.
       if (decision.producto_id && catalogo[decision.producto_id]) {
         await enviarImagenes(from, decision.producto_id);
       } else {
-        await enviarMensaje(from, "Ese producto no lo tengo en mi lista. ¿Quieres ver el catálogo?");
+        await enviarMensaje(from, "Ese producto no lo tengo. ¿Quieres ver el catálogo?");
       }
       break;
   }
 
-  logConversacion(from, textoUsuario, decision.respuesta, decision.accion);
+  logConversacion(from, textoUsuario, decision.respuesta || "[sin texto]", decision.accion);
 }
 
 // Webhooks
@@ -257,7 +240,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Personalidad Real"));
+app.get("/", (req, res) => res.send("Ana IA - Personalidad Real y sin duplicados"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
