@@ -66,7 +66,7 @@ async function enviarMensaje(to, body) {
 }
 
 // ==============================
-// 🖼️ ENVIAR IMÁGENES
+// 🖼️ ENVIAR IMÁGENES + VENTA
 // ==============================
 async function enviarImagenes(to, producto) {
   const item = catalogo[producto];
@@ -76,7 +76,17 @@ async function enviarImagenes(to, producto) {
     return;
   }
 
-  await enviarMensaje(to, `mira ${item.nombre} 👇`);
+  let mensaje = `mira ${item.nombre} 👇`;
+
+  if (producto.includes("adoquin")) {
+    mensaje += "\nes de los más usados para exteriores";
+  }
+
+  if (producto.includes("fachaleta")) {
+    mensaje += "\nqueda muy bien en fachadas";
+  }
+
+  await enviarMensaje(to, mensaje);
 
   for (const img of item.imagenes) {
     await axios.post(
@@ -96,6 +106,14 @@ async function enviarImagenes(to, producto) {
 
     await new Promise(r => setTimeout(r, 700));
   }
+
+  // 💰 cierre suave
+  setTimeout(async () => {
+    await enviarMensaje(
+      to,
+      "si quieres te ayudo a calcular lo que necesitas o te doy una idea de costo 👍"
+    );
+  }, 1500);
 }
 
 // ==============================
@@ -108,7 +126,7 @@ async function mostrarCatalogo(to) {
     mensaje += `• ${catalogo[key].nombre}\n`;
   }
 
-  mensaje += "\nsi quieres fotos dime cuál 👍";
+  mensaje += "\nsi quieres ver fotos dime cuál";
 
   await enviarMensaje(to, mensaje);
 }
@@ -148,7 +166,7 @@ app.post("/webhook", async (req, res) => {
 
     text = normalizarTexto(text);
 
-    // ❌ evitar duplicados
+    // evitar duplicados
     if (processedMessages.has(msgId)) return res.sendStatus(200);
     processedMessages.add(msgId);
 
@@ -173,13 +191,10 @@ app.post("/webhook", async (req, res) => {
 
     const quiereImagen =
       text.includes("imagen") ||
-      text.includes("imagenes") ||
       text.includes("foto") ||
-      text.includes("fotos") ||
       text.includes("ver") ||
       text.includes("muestra") ||
-      text.includes("mostrar") ||
-      text.includes("manda");
+      text.includes("mostrar");
 
     const quiereTodo =
       text.includes("todo") ||
@@ -205,12 +220,11 @@ app.post("/webhook", async (req, res) => {
     }
 
     // ==============================
-    // 🔥 IMÁGENES DIRECTAS
+    // 🖼️ IMÁGENES
     // ==============================
     if (session.producto && quiereImagen) {
       if (session.producto === "GENERAL_ADOQUINES") {
         await mostrarCatalogo(from);
-        session.esperando = "elegir_producto";
         return res.sendStatus(200);
       }
 
@@ -219,7 +233,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     // ==============================
-    // 🔥 SI DICE "SI" Y YA HAY PRODUCTO
+    // 🔥 SI DICE "SI"
     // ==============================
     if (esSi && session.producto && session.producto !== "GENERAL_ADOQUINES") {
       await enviarImagenes(from, session.producto);
@@ -236,7 +250,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     // ==============================
-    // 🤖 IA SOLO SI NO HAY CASO
+    // 🤖 IA (solo fallback)
     // ==============================
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
@@ -253,9 +267,13 @@ Hablas natural, como persona real.
 - corta
 - amable
 - no robot
+- no usas muchos emojis
 - ayudas fácil
-- no repites preguntas
-- si no entiendes: "qué pena, no te entendí bien"
+
+Ventas:
+- no presionas
+- guías poco a poco
+- invitas a cotizar suave
 `
           },
           { role: "user", content: text }
