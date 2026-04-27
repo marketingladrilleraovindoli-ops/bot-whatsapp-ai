@@ -1,6 +1,7 @@
 import express from "express";
 import axios from "axios";
 import dotenv from "dotenv";
+import { catalogo } from "./catalogo.js";
 
 dotenv.config();
 
@@ -9,55 +10,45 @@ app.use(express.json());
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 
+// ==============================
+// 🧠 MEMORIA
+// ==============================
 const sessions = new Map();
 const processedMessages = new Set();
 
 // ==============================
-// 📦 CATÁLOGO
+// 🧠 NORMALIZAR TEXTO
 // ==============================
-const catalogo = {
-  adoquin_20x10x6: {
-    nombre: "Adoquín 20x10x6",
-    imagenes: [
-      "https://via.placeholder.com/500x500?text=Adoquin1",
-      "https://via.placeholder.com/500x500?text=Adoquin2"
-    ]
-  },
-
-  adoquin_20x10x4: {
-    nombre: "Adoquín 20x10x4",
-    imagenes: [
-      "https://via.placeholder.com/500x500?text=Adoquin3",
-      "https://via.placeholder.com/500x500?text=Adoquin4"
-    ]
-  }
-};
-
-// ==============================
-// NORMALIZAR TEXTO
-// ==============================
-function normalizar(texto) {
+function normalizarTexto(texto) {
   return texto
     .toLowerCase()
-    .replace(/doquin|adoquines|adoqin|adokines/g, "adoquin");
+    .replace(/doquin|doquines|adokines|adoqin/g, "adoquin")
+    .replace(/fachada/g, "fachaleta");
 }
 
 // ==============================
-// DETECTAR PRODUCTO
+// 🧠 DETECTAR PRODUCTO
 // ==============================
 function detectarProducto(texto) {
-  if (texto.includes("20x10x6")) return "adoquin_20x10x6";
-  if (texto.includes("20x10x4")) return "adoquin_20x10x4";
+  for (const key in catalogo) {
+    const nombre = catalogo[key].nombre.toLowerCase();
 
-  if (texto.includes("adoquin")) return "GENERAL";
+    if (texto.includes(nombre)) return key;
+
+    // detectar por medidas
+    if (texto.includes("20x10x6") && key.includes("20x10x6")) return key;
+    if (texto.includes("20x10x4") && key.includes("20x10x4")) return key;
+  }
+
+  if (texto.includes("adoquin")) return "GENERAL_ADOQUINES";
 
   return null;
 }
 
 // ==============================
-// ENVIAR TEXTO
+// 📤 MENSAJE
 // ==============================
-async function enviarTexto(to, body) {
+async function enviarMensaje(to, body) {
   await axios.post(
     `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
     {
@@ -67,21 +58,24 @@ async function enviarTexto(to, body) {
     },
     {
       headers: {
-        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json"
+        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`
       }
     }
   );
 }
 
 // ==============================
-// ENVIAR IMÁGENES
+// 🖼️ ENVIAR IMÁGENES
 // ==============================
 async function enviarImagenes(to, producto) {
   const item = catalogo[producto];
-  if (!item) return;
 
-  await enviarTexto(to, `mira 👇`);
+  if (!item?.imagenes?.length) {
+    await enviarMensaje(to, "no tengo imágenes cargadas aún 😅");
+    return;
+  }
+
+  await enviarMensaje(to, `mira ${item.nombre} 👇`);
 
   for (const img of item.imagenes) {
     await axios.post(
@@ -94,31 +88,47 @@ async function enviarImagenes(to, producto) {
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-          "Content-Type": "application/json"
+          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`
         }
       }
     );
 
-    await new Promise(r => setTimeout(r, 600));
+    await new Promise(r => setTimeout(r, 700));
   }
 }
 
 // ==============================
-// VERIFY
+// 📦 MOSTRAR CATÁLOGO
+// ==============================
+async function mostrarCatalogo(to) {
+  let mensaje = "mira 👇 manejamos:\n\n";
+
+  for (const key in catalogo) {
+    mensaje += `• ${catalogo[key].nombre}\n`;
+  }
+
+  mensaje += "\nsi quieres fotos dime cuál 👍";
+
+  await enviarMensaje(to, mensaje);
+}
+
+// ==============================
+// ✅ VERIFY
 // ==============================
 app.get("/webhook", (req, res) => {
-  if (
-    req.query["hub.mode"] === "subscribe" &&
-    req.query["hub.verify_token"] === VERIFY_TOKEN
-  ) {
-    return res.send(req.query["hub.challenge"]);
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
   }
+
   res.sendStatus(403);
 });
 
 // ==============================
-// WEBHOOK
+// 🚀 WEBHOOK
 // ==============================
 app.post("/webhook", async (req, res) => {
   try {
@@ -126,118 +136,128 @@ app.post("/webhook", async (req, res) => {
 
     if (value?.statuses) return res.sendStatus(200);
 
-    const msg = value?.messages?.[0];
-    if (!msg) return res.sendStatus(200);
+    const message = value?.messages?.[0];
+    if (!message) return res.sendStatus(200);
 
-    const from = msg.from;
-    const id = msg.id;
+    const from = message.from;
+    const msgId = message.id;
 
-    let text = msg.text?.body;
+    let text = message.text?.body;
     if (!text) return res.sendStatus(200);
 
-    text = normalizar(text);
+    text = normalizarTexto(text);
 
-    if (processedMessages.has(id)) return res.sendStatus(200);
-    processedMessages.add(id);
+    // ❌ duplicados
+    if (processedMessages.has(msgId)) return res.sendStatus(200);
+    processedMessages.add(msgId);
 
     console.log("Mensaje:", text);
 
     // ==============================
-    // SESIÓN
+    // 🧠 SESIÓN
     // ==============================
     if (!sessions.has(from)) {
       sessions.set(from, {
         producto: null,
-        esperandoImagen: false
+        esperando: null
       });
     }
 
     const session = sessions.get(from);
 
-    // ==============================
-    // INTENCIÓN
-    // ==============================
-    const producto = detectarProducto(text);
-    if (producto) session.producto = producto;
+    const productoDetectado = detectarProducto(text);
+    if (productoDetectado) session.producto = productoDetectado;
 
-    const esSi = ["si", "sí", "dale", "ok"].includes(text);
-
-    const quiereTodo =
-      text.includes("todo") ||
-      text.includes("cuales") ||
-      text.includes("tienen");
-
-    const quiereVer =
-      text.includes("ver") ||
-      text.includes("mostrar") ||
-      text.includes("foto");
+    const esSi = ["si", "sí", "dale", "ok", "listo"].includes(text);
+    const quiereTodo = text.includes("todo") || text.includes("todos");
+    const quiereVer = text.includes("ver") || text.includes("muestra");
 
     // ==============================
-    // MOSTRAR TODO
+    // 📦 MOSTRAR TODO
     // ==============================
-    if (quiereTodo) {
-      let lista = "manejamos estos:\n\n";
-
-      Object.values(catalogo).forEach(p => {
-        lista += `• ${p.nombre}\n`;
-      });
-
-      lista += "\ndime cuál quieres ver 👍";
-
-      await enviarTexto(from, lista);
+    if (quiereTodo || text.includes("catalogo")) {
+      await mostrarCatalogo(from);
+      session.esperando = "elegir_producto";
       return res.sendStatus(200);
     }
 
     // ==============================
-    // RESPUESTA INTELIGENTE
+    // 👀 SI DICE "SI"
     // ==============================
-
-    // 👉 usuario dice "adoquines"
-    if (session.producto === "GENERAL") {
-      await enviarTexto(
-        from,
-        "sí 👍 manejamos varios\nquieres que te muestre referencias?"
-      );
-
-      session.esperandoImagen = true;
+    if (esSi && session.esperando === "mostrar_catalogo") {
+      await mostrarCatalogo(from);
+      session.esperando = "elegir_producto";
       return res.sendStatus(200);
     }
 
-    // 👉 usuario dijo SI después
-    if (esSi && session.esperandoImagen) {
-      let lista = "tengo estos:\n\n";
-
-      Object.values(catalogo).forEach(p => {
-        lista += `• ${p.nombre}\n`;
-      });
-
-      lista += "\ndime cuál quieres ver 👍";
-
-      await enviarTexto(from, lista);
-
-      session.esperandoImagen = false;
-      return res.sendStatus(200);
-    }
-
-    // 👉 usuario eligió producto
-    if (catalogo[session.producto]) {
+    // ==============================
+    // 🖼️ MOSTRAR PRODUCTO
+    // ==============================
+    if ((quiereVer || esSi) && session.producto && session.producto !== "GENERAL_ADOQUINES") {
       await enviarImagenes(from, session.producto);
+      session.esperando = null;
       return res.sendStatus(200);
     }
 
     // ==============================
-    // FALLBACK HUMANO
+    // 🧱 SI SOLO DICE ADOQUINES
     // ==============================
-    await enviarTexto(from, "hola 😊 en qué te ayudo?");
+    if (session.producto === "GENERAL_ADOQUINES") {
+      await enviarMensaje(from, "manejamos varios 👍 quieres que te muestre todos?");
+      session.esperando = "mostrar_catalogo";
+      return res.sendStatus(200);
+    }
+
+    // ==============================
+    // 🤖 IA RESPALDO
+    // ==============================
+    const response = await axios.post(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `
+Eres Ana de Ladrillera La Toscana.
+
+Hablas natural, como persona real.
+
+- corta
+- amable
+- no robot
+- si no entiendes: "qué pena, no te entendí bien"
+`
+          },
+          { role: "user", content: text }
+        ]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+        }
+      }
+    );
+
+    const reply = response.data.choices[0].message.content;
+
+    await new Promise(r => setTimeout(r, Math.random() * 2000 + 1000));
+
+    await enviarMensaje(from, reply);
+
     res.sendStatus(200);
 
-  } catch (err) {
-    console.error(err.response?.data || err.message);
+  } catch (error) {
+    console.error("ERROR:", error.response?.data || error.message);
     res.sendStatus(200);
   }
 });
 
 // ==============================
+app.get("/", (req, res) => {
+  res.send("Ana PRO activa 🚀");
+});
+
 app.listen(process.env.PORT || 3000, () => {
   console.log("Servidor activo");
 });
