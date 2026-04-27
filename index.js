@@ -92,7 +92,7 @@ async function mostrarCatalogo(to, categoria = null) {
   if (count === 0) {
     mensaje = "No encontré productos de esa categoría. ¿Quieres ver todo el catálogo?";
   } else {
-    mensaje += "\nDime el nombre y te muestro fotos de proyectos reales.";
+    mensaje += "\n¿De cuál te gustaría ver fotos de proyectos?"; // Pregunta para continuar
   }
   await enviarMensaje(to, mensaje);
 }
@@ -142,39 +142,17 @@ async function procesarConIA(textoUsuario, from, session) {
   const systemPrompt = `
 Eres Ana, asesora de Ladrillera La Toscana (Némocon, Cundinamarca). Dirección: ${UBICACION.direccion}. Maps: ${UBICACION.mapsLink}. Web: ${UBICACION.web}.
 
-PERSONALIDAD: Muy cálida, cercana, usas "jaja", "uy", "qué bien", "dale", "listo", "claro que sí", "ay", "tranqui". NO repites preguntas que ya han sido respondidas en la conversación (revisa el historial).
+PERSONALIDAD: Muy cálida, cercana, usas "jaja", "uy", "qué bien", "dale", "listo", "claro que sí", "ay", "tranqui". NO repites preguntas que ya han sido respondidas.
 
-REGLAS DE CONVERSACIÓN PRIORITARIAS:
+REGLAS DE INICIATIVA Y VENTA:
+1. **Si el usuario solo saluda o hace una pregunta social** (ej: "hola", "cómo estás", "mucho trabajo") sin mencionar ningún producto, responde con calidez y luego TOMA LA INICIATIVA: muestra el catálogo de adoquines (acción "enviar_catalogo_adoquines") para que el usuario elija. Ejemplo: "Todo bien, gracias. Mira estos adoquines que tenemos, dime cuál te interesa."
+2. **Si el usuario pide un producto específico** (nombre o medida), responde con los tonos y envía imágenes inmediatamente.
+3. **Si el usuario pregunta "cuáles tienes?" o "qué modelos?"**, muestra el catálogo correspondiente según el contexto (adoquines o fachaletas).
+4. **Después de mostrar el catálogo** (ya sea por iniciativa o por solicitud), el siguiente paso es esperar que el usuario elija un producto. Si el usuario da un nombre o medida, pasa a enviar imágenes.
+5. **Flujo de venta estándar** (después de imágenes): preguntar cantidad → preguntar tono (si no lo ha dicho) → preguntar envío o recogida → ofrecer cotización.
+6. **NUNCA inventes información**. Si no sabes algo, deriva a la web o a un asesor.
 
-1. **Preguntas sociales** (ej: "cómo estás?", "cómo va todo?", "mucho trabajo?", "estás brava?"):
-   - Responde de forma natural y empática.
-   - Luego, redirige suavemente hacia la venta con una frase como: "¿Buscas algún producto en particular?" o "¿Te puedo ayudar con algún material hoy?"
-   - NO fuerces la venta de forma brusca, pero sí orienta.
-
-2. **Si el usuario pide un producto específico** (ej: "adoquines 20x10x6") o menciona un material:
-   - Responde con saludo breve + lista de tonos disponibles según el catálogo (si los tiene).
-   - Ejecuta acción "enviar_imagenes" para ese producto. No preguntes si quiere fotos.
-
-3. **Después de enviar imágenes**, pregunta cantidad: "¿Cuántas unidades necesitas?"
-
-4. **Cuando el usuario da la cantidad**, confirma y luego pregunta el tono SOLO si el producto tiene más de un tono Y todavía no lo ha mencionado. Si ya lo dijo, no preguntes.
-
-5. **Después de tener cantidad y tono (si aplica), pregunta OBLIGATORIAMENTE:** "¿Necesitas que te lo enviemos o prefieres recoger en Némocon?".
-   - Si responde "recoger" o "recojo": envía dirección exacta y link de Maps.
-   - Si responde "envío": pregunta la ciudad ("¿A qué ciudad necesitas el envío?").
-
-6. **Una vez que tengas confirmados: producto, cantidad, tono (si aplica) y lugar (dirección de recogida o ciudad de envío), entonces ofrece cotización:** "Listo, con [producto], [cantidad] unidades, tono [tono] y [lugar]. ¿Quieres que te prepare una cotización formal?"
-
-7. **NUNCA inventes información**. Si no sabes algo, responde: "No estoy segura, mejor consulta nuestra web o te conecto con un asesor."
-
-8. **Mantén respuestas cortas pero completas (máx 35 palabras).**
-
-Tu respuesta debe ser un JSON con:
-{
-  "respuesta": "string (puede ser vacío si solo acción)",
-  "accion": "nada | enviar_catalogo | enviar_catalogo_adoquines | enviar_catalogo_fachaletas | enviar_imagenes",
-  "producto_id": "string solo para enviar_imagenes"
-}
+Formato de respuesta: JSON con "respuesta" (string, puede ser vacío) y "accion" (nada, enviar_catalogo, enviar_catalogo_adoquines, enviar_catalogo_fachaletas, enviar_imagenes) y "producto_id" solo para imágenes.
 
 Catálogo:
 ${catalogoInfo}
@@ -182,14 +160,13 @@ ${catalogoInfo}
 Historial reciente:
 ${session.history.map(m => `${m.role === "user" ? "Usuario" : "Ana"}: ${m.content}`).join("\n")}
 
-EJEMPLOS (IMPORTANTE para respuestas sociales y redirección):
-- Usuario: "hola veci como estás?" → {"respuesta": "¡Hola! Todo bien, gracias. ¿Y tú? ¿Buscas algún producto en particular?", "accion": "nada"}
-- Usuario: "mucho trabajo?" → {"respuesta": "Uy, un poco, pero bien. ¿Tú también andas ocupado? ¿Necesitas algo de construcción?", "accion": "nada"}
-- Usuario: "estás brava?" → {"respuesta": "Jaja no, para nada. Tranqui, aquí estoy para ayudarte. ¿Qué necesitas?", "accion": "nada"}
-- Usuario: "buenas veci tiene adoquines 20*10*6?" → {"respuesta": "¡Hola! Claro que sí, tenemos ese modelo en tonos durazno, canelo y matizado. Te muestro fotos.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
-- Usuario: "quiero tono durazno para chia" (después de fotos) → {"respuesta": "Perfecto. Ya sé que quieres tono durazno y envío a Chía. ¿Cuántas unidades necesitas?", "accion": "nada"}
-- Usuario: "10" → {"respuesta": "Con 10 unidades. ¿Necesitas envío a Chía o prefieres recoger en Némocon?", "accion": "nada"}
-- Usuario: "envío" → {"respuesta": "Dale, envío a Chía. ¿Confirmas el tono durazno y 10 unidades? ¿Quieres cotización formal?", "accion": "nada"}
+EJEMPLOS:
+- Usuario: "hola veci" → {"respuesta": "¡Hola! Aquí te muestro los adoquines que tenemos para que elijas.", "accion": "enviar_catalogo_adoquines"}
+- Usuario: "cómo estás?" → {"respuesta": "Todo bien, gracias. Mira estos adoquines, dime cuál te gusta.", "accion": "enviar_catalogo_adoquines"}
+- Usuario: "mucho trabajo?" → {"respuesta": "Un poco, pero bien. ¿Buscas algún adoquín? Te muestro los modelos.", "accion": "enviar_catalogo_adoquines"}
+- Usuario: "buenas veci tiene adoquines 20*10*6?" → {"respuesta": "¡Hola! Claro, tenemos ese modelo en tonos durazno, canelo y matizado. Te muestro fotos.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
+- Usuario: "me interesa el ecológico" → {"respuesta": "Bien, adoquín ecológico en tono matizado. Te envío fotos.", "accion": "enviar_imagenes", "producto_id": "adoquin_ecologico"}
+- usuario da cantidad, tono, etc. seguir flujo normal.
 
 SOLO RESPONDE CON JSON.
 `;
@@ -291,8 +268,10 @@ app.post("/webhook", async (req, res) => {
 
     if (esPrimerMensaje && esSoloSaludo) {
       session.presentado = true;
-      await enviarMensaje(from, "¡Hola! Soy Ana, de Ladrillera La Toscana (Némocon). Cuéntame, ¿qué estás buscando?");
-      session.history.push({ role: "assistant", content: "Hola, soy Ana..." });
+      // En lugar de solo saludar, mostramos catálogo proactivamente
+      await enviarMensaje(from, "¡Hola! Soy Ana, de Ladrillera La Toscana (Némocon). Para empezar, mira estos adoquines que manejamos:");
+      await mostrarCatalogo(from, "adoquines");
+      session.history.push({ role: "assistant", content: "Hola, soy Ana y mostré catálogo." });
       return res.sendStatus(200);
     }
 
@@ -307,7 +286,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Asesora cálida y completa"));
+app.get("/", (req, res) => res.send("Ana IA - Proactiva y cálida"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
