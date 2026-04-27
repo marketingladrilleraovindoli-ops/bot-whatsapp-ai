@@ -22,8 +22,8 @@ const processedMessages = new Set();
 function normalizarTexto(texto) {
   return texto
     .toLowerCase()
-    .replace(/doquin|doquines|adokines|adoqin/g, "adoquin")
-    .replace(/fachada/g, "fachaleta");
+    .replace(/doquin|doquines|adokines|adoqin|adoquines/g, "adoquin")
+    .replace(/fachada|fachadas/g, "fachaleta");
 }
 
 // ==============================
@@ -35,10 +35,17 @@ function detectarProducto(texto) {
 
     if (texto.includes(nombre)) return key;
 
+    // detectar medidas
     if (texto.includes("20x10x3") && key.includes("20x10x3")) return key;
     if (texto.includes("20x10x4") && key.includes("20x10x4")) return key;
     if (texto.includes("20x10x6") && key.includes("20x10x6")) return key;
     if (texto.includes("20x10x8") && key.includes("20x10x8")) return key;
+
+    // fachaletas por nombre parcial
+    if (texto.includes("cappuccino") && key.includes("cappuccino")) return key;
+    if (texto.includes("nero") && key.includes("nero")) return key;
+    if (texto.includes("toscano") && key.includes("toscano")) return key;
+    if (texto.includes("bianco") && key.includes("bianco")) return key;
   }
 
   if (texto.includes("adoquin")) return "GENERAL_ADOQUINES";
@@ -72,7 +79,7 @@ async function enviarImagenes(to, producto) {
   const item = catalogo[producto];
 
   if (!item?.imagenes?.length) {
-    await enviarMensaje(to, "aún no tengo imágenes cargadas 😅");
+    await enviarMensaje(to, "aún no tengo fotos cargadas 😅");
     return;
   }
 
@@ -148,7 +155,7 @@ app.post("/webhook", async (req, res) => {
 
     text = normalizarTexto(text);
 
-    // ❌ evitar duplicados
+    // ❌ duplicados
     if (processedMessages.has(msgId)) return res.sendStatus(200);
     processedMessages.add(msgId);
 
@@ -169,17 +176,15 @@ app.post("/webhook", async (req, res) => {
     const productoDetectado = detectarProducto(text);
     if (productoDetectado) session.producto = productoDetectado;
 
-    const esSi = ["si", "sí", "dale", "ok", "listo"].includes(text);
+    const esSi = ["si", "sí", "dale", "ok", "listo", "de una"].includes(text);
 
     const quiereImagen =
       text.includes("imagen") ||
       text.includes("imagenes") ||
       text.includes("foto") ||
-      text.includes("fotos") ||
       text.includes("ver") ||
       text.includes("muestra") ||
-      text.includes("mostrar") ||
-      text.includes("manda");
+      text.includes("mostrar");
 
     const quiereTodo =
       text.includes("todo") ||
@@ -196,33 +201,20 @@ app.post("/webhook", async (req, res) => {
     }
 
     // ==============================
+    // 🔥 SI YA ELIGIÓ PRODUCTO → MOSTRAR DIRECTO
+    // ==============================
+    if (session.producto && session.producto !== "GENERAL_ADOQUINES") {
+      await enviarImagenes(from, session.producto);
+      session.esperando = null;
+      return res.sendStatus(200);
+    }
+
+    // ==============================
     // 👀 SI DICE "SI"
     // ==============================
     if (esSi && session.esperando === "mostrar_catalogo") {
       await mostrarCatalogo(from);
       session.esperando = "elegir_producto";
-      return res.sendStatus(200);
-    }
-
-    // ==============================
-    // 🔥 IMÁGENES DIRECTAS
-    // ==============================
-    if (session.producto && quiereImagen) {
-      if (session.producto === "GENERAL_ADOQUINES") {
-        await mostrarCatalogo(from);
-        session.esperando = "elegir_producto";
-        return res.sendStatus(200);
-      }
-
-      await enviarImagenes(from, session.producto);
-      return res.sendStatus(200);
-    }
-
-    // ==============================
-    // 🔥 SI DICE "SI" Y YA HAY PRODUCTO
-    // ==============================
-    if (esSi && session.producto && session.producto !== "GENERAL_ADOQUINES") {
-      await enviarImagenes(from, session.producto);
       return res.sendStatus(200);
     }
 
@@ -236,7 +228,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     // ==============================
-    // 🤖 IA SOLO SI NO HAY CASO
+    // 🤖 IA (solo fallback)
     // ==============================
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
@@ -248,14 +240,15 @@ app.post("/webhook", async (req, res) => {
             content: `
 Eres Ana de Ladrillera La Toscana.
 
-Hablas natural, como persona real.
+Hablas como persona real:
 
-- corta
+- natural
 - amable
+- corta
 - no robot
 - ayudas fácil
-- no repites preguntas
-- si no entiendes: "qué pena, no te entendí bien"
+- no repites
+- si no entiendes: "qué pena no te entendí bien"
 `
           },
           { role: "user", content: text }
