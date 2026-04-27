@@ -16,34 +16,43 @@ const sessions = new Map();
 const processedMessages = new Set();
 
 // ==============================
-// 📦 CATÁLOGO (EDITA CON TUS IMÁGENES)
+// 📦 CATÁLOGO (EDITA SOLO IMÁGENES)
 // ==============================
 const catalogo = {
   adoquin_20x10x6: {
     nombre: "Adoquín 20x10x6",
-    uso: "ideal para exteriores",
+    uso: "ideal para exterior",
     rendimiento: 50,
     tonos: ["durazno", "canelo", "matizado"],
     imagenes: [
-      "https://i.imgur.com/8Km9tLL.jpg",
-      "https://i.imgur.com/5tj6S7Ol.jpg",
-      "https://i.imgur.com/3ZQ3Z6cl.jpg"
+      "https://TU-IMAGEN-1.jpg",
+      "https://TU-IMAGEN-2.jpg"
     ]
   },
 
-  fachaleta_capuccino: {
-    nombre: "Fachaleta Capuccino",
+  adoquin_20x10x4: {
+    nombre: "Adoquín 20x10x4",
+    rendimiento: 50,
+    tonos: ["durazno", "canelo", "matizado"],
     imagenes: [
-      "https://i.imgur.com/abc1.jpg",
-      "https://i.imgur.com/abc2.jpg"
+      "https://TU-IMAGEN-1.jpg",
+      "https://TU-IMAGEN-2.jpg"
+    ]
+  },
+
+  fachaleta_cappuccino: {
+    nombre: "Fachaleta Cappuccino",
+    imagenes: [
+      "https://TU-IMAGEN-1.jpg",
+      "https://TU-IMAGEN-2.jpg"
     ]
   },
 
   fachaleta_toscano: {
     nombre: "Fachaleta Toscano",
     imagenes: [
-      "https://i.imgur.com/xyz1.jpg",
-      "https://i.imgur.com/xyz2.jpg"
+      "https://TU-IMAGEN-1.jpg",
+      "https://TU-IMAGEN-2.jpg"
     ]
   }
 };
@@ -70,7 +79,7 @@ app.post("/webhook", async (req, res) => {
   try {
     const value = req.body?.entry?.[0]?.changes?.[0]?.value;
 
-    // ❌ evitar estados y eventos raros
+    // ❌ ignorar estados
     if (value?.statuses) return res.sendStatus(200);
 
     const message = value?.messages?.[0];
@@ -106,27 +115,36 @@ app.post("/webhook", async (req, res) => {
 
     const session = sessions.get(from);
 
-    // ==============================
-    // 🔍 DETECTAR INTENCIÓN
-    // ==============================
+    // guardar historial
+    session.history.push({ role: "user", content: text });
+    if (session.history.length > 6) session.history.shift();
 
+    // ==============================
+    // 🔍 DETECCIÓN INTELIGENTE
+    // ==============================
     if (text.includes("20") && text.includes("10") && text.includes("6")) {
       session.producto = "adoquin_20x10x6";
     }
 
-    if (text.includes("capuccino")) {
-      session.producto = "fachaleta_capuccino";
+    if (text.includes("20") && text.includes("10") && text.includes("4")) {
+      session.producto = "adoquin_20x10x4";
+    }
+
+    if (text.includes("cappuccino")) {
+      session.producto = "fachaleta_cappuccino";
     }
 
     if (text.includes("toscano")) {
       session.producto = "fachaleta_toscano";
     }
 
+    // metros
     if (text.includes("metro")) {
       const num = parseInt(text);
       if (num) session.metros = num;
     }
 
+    // ubicación
     if (
       text.includes("cogua") ||
       text.includes("zipa") ||
@@ -142,9 +160,9 @@ app.post("/webhook", async (req, res) => {
       text.includes("muestr");
 
     // ==============================
-    // 🖼️ ENVIAR IMÁGENES
+    // 🖼️ IMÁGENES (REAL)
     // ==============================
-    if (quiereImagen && catalogo[session.producto]?.imagenes) {
+    if (quiereImagen && session.producto && catalogo[session.producto]) {
       await axios.post(
         `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
         {
@@ -177,24 +195,29 @@ app.post("/webhook", async (req, res) => {
           }
         );
 
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 900));
       }
 
       return res.sendStatus(200);
     }
 
     // ==============================
-    // 🧠 RESPUESTAS INTELIGENTES
+    // 🧠 RESPUESTAS DIRECTAS (rápidas)
     // ==============================
     let reply = null;
 
-    if (session.producto === "adoquin_20x10x6" && !session.metros) {
-      reply = "sí 👍 ese es muy usado para exterior";
+    if (session.producto && !session.metros) {
+      reply = "sí 👍 ese es muy usado";
     }
 
-    if (session.producto === "adoquin_20x10x6" && session.metros && !session.calculado) {
-      const unidades = session.metros * 50;
-      reply = `para ${session.metros} m² necesitas aprox ${unidades} adoquines 👍`;
+    if (
+      session.producto &&
+      session.metros &&
+      !session.calculado &&
+      catalogo[session.producto]?.rendimiento
+    ) {
+      const unidades = session.metros * catalogo[session.producto].rendimiento;
+      reply = `para ${session.metros} m² necesitas aprox ${unidades} unidades 👍`;
       session.calculado = true;
     }
 
@@ -203,26 +226,29 @@ app.post("/webhook", async (req, res) => {
       session.envioRespondido = true;
     }
 
-    if (text.includes("tono") || text.includes("color")) {
-      reply = "manejamos durazno, canelo y matizado 👍";
+    if (text.includes("color") || text.includes("tono")) {
+      const tonos = catalogo[session.producto]?.tonos;
+      if (tonos) {
+        reply = `tenemos ${tonos.join(", ")} 👍`;
+      }
     }
 
     // ==============================
-    // 🤖 IA (SOLO SI NO HAY RESPUESTA)
+    // 🤖 IA (CON MEMORIA REAL)
     // ==============================
     if (!reply) {
       const systemPrompt = `
 Eres Ana, asesora de Ladrillera La Toscana.
 
-Hablas como persona real.
+Hablas como una persona real.
 
 Reglas:
 - respuestas cortas
 - natural (ej: "dale", "perfecto", "ya te reviso")
-- no repites preguntas
 - no suenas robot
-- no presionas venta
+- no repites preguntas
 - ayudas fácil
+- no presionas venta
 - no das info que no pidan
 - si no entiendes: "qué pena, no te entendí bien"
 `;
@@ -233,7 +259,7 @@ Reglas:
           model: "gpt-4o-mini",
           messages: [
             { role: "system", content: systemPrompt },
-            { role: "user", content: text }
+            ...session.history
           ]
         },
         {
@@ -245,12 +271,13 @@ Reglas:
       );
 
       reply = response.data.choices[0].message.content;
+      session.history.push({ role: "assistant", content: reply });
     }
 
     // ==============================
-    // ⏱️ DELAY HUMANO
+    // ⏱️ DELAY HUMANO REAL
     // ==============================
-    const delay = Math.floor(Math.random() * 2000) + 1500;
+    const delay = Math.floor(Math.random() * 2500) + 1200;
     await new Promise(r => setTimeout(r, delay));
 
     // ==============================
