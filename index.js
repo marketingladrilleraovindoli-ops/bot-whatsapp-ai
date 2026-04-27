@@ -14,11 +14,6 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 const sessions = new Map();
 const processedMessages = new Set();
 
-const UBICACION = {
-  direccion: "Cra 4 #9-12, Barrio El Centro, Némocon, Cundinamarca",
-  mapsLink: "https://maps.app.goo.gl/anyRAWvMrwqM2jnH7"
-};
-
 function logConversacion(from, userMsg, botResp, accion) {
   const logLine = JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -34,8 +29,7 @@ function normalizarTexto(texto) {
   return texto
     .toLowerCase()
     .replace(/doquin|doquines|adokines|adoqin|adoquines/g, "adoquin")
-    .replace(/fachada|fachadas|fachaleta arquitectonica|fachaleta arquitectónica/g, "fachaleta")
-    .replace(/\*/g, "x");
+    .replace(/fachada|fachadas|fachaleta arquitectonica|fachaleta arquitectónica/g, "fachaleta");
 }
 
 async function enviarMensaje(to, body) {
@@ -55,9 +49,10 @@ async function enviarMensaje(to, body) {
 async function enviarImagenes(to, productoId) {
   const item = catalogo[productoId];
   if (!item || !item.imagenes || item.imagenes.length === 0) {
-    await enviarMensaje(to, "Ay, aún no tengo fotos de ese producto. ¿Te muestro otros similares?");
+    await enviarMensaje(to, "Aún no tengo fotos de ese producto. ¿Te interesa otro similar?");
     return;
   }
+
   for (const img of item.imagenes) {
     await axios.post(
       `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -88,14 +83,16 @@ async function mostrarCatalogo(to, categoria = null) {
   }
 
   if (count === 0) {
-    mensaje = "No encontré productos de esa categoría. ¿Quieres ver todo el catálogo?";
+    mensaje = "No encontré productos de esa categoría. ¿Quieres ver el catálogo completo?";
   } else {
     mensaje += "\nDime el nombre y te muestro fotos de proyectos reales.";
   }
   await enviarMensaje(to, mensaje);
 }
 
+// Detección robusta de cantidades (soporta 10.000, 100,000, 1000, etc.)
 function detectarCantidad(texto) {
+  // Busca números con puntos o comas (ej: 10.000, 100,000) y también números simples
   const match = texto.match(/(\d{1,3}(?:[.,]\d{3})*(?:\.\d+)?)/);
   if (match) {
     let numStr = match[1].replace(/\./g, '').replace(',', '');
@@ -109,47 +106,41 @@ async function procesarConIA(textoUsuario, from, session) {
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
+  // Detectar cantidad actualizada
   const nuevaCantidad = detectarCantidad(textoUsuario);
-  if (nuevaCantidad !== null && nuevaCantidad !== session.ultimaCantidad) {
+  if (nuevaCantidad !== null) {
     session.ultimaCantidad = nuevaCantidad;
     session.cantidadConfirmada = false;
   }
 
+  // Si el usuario está corrigiendo la cantidad (ej: "10.000 solo es esa cantidad") marcar para no preguntar de nuevo
+  if (/solo es esa cantidad|corregir|no es|habia dicho/i.test(textoUsuario) && session.ultimaCantidad) {
+    session.cantidadConfirmada = true;
+  }
+
   const catalogoInfo = Object.entries(catalogo)
-    .map(([id, prod]) => {
-      let info = `id: ${id}, nombre: ${prod.nombre}`;
-      if (prod.tonos) info += `, tonos: ${prod.tonos.join(", ")}`;
-      return info;
-    })
+    .map(([id, prod]) => `id: ${id}, nombre: ${prod.nombre}`)
     .join("\n");
 
-  // System prompt mejorado para conversación natural y humana
   const systemPrompt = `
-Eres Ana, asesora de Ladrillera La Toscana (Némocon, Cundinamarca). Dirección: ${UBICACION.direccion}. Maps: ${UBICACION.mapsLink}.
+Eres Ana, asesora de Ladrillera La Toscana. Somos una empresa colombiana ubicada en Némocon (Cundinamarca). NO inventes ubicaciones. Si no sabes algo, di que consultes nuestra página web o que te comunico con un asesor.
 
-TU PERSONALIDAD: Eres extremadamente cálida, cercana, y conversas como una amiga real. Usas expresiones como "jaja", "uy", "qué bien", "dale", "listo", "claro que sí", "ay", "qué pena", "tranqui". Nunca suenas a robot ni repites la misma frase.
+Hablas de forma muy humana, cálida, usas "jaja", "uy", "dale", "listo", "qué bien". Nunca eres seca ni robótica.
 
-REGLAS DE CONVERSACIÓN SOCIAL (MUY IMPORTANTE):
-- Si el usuario solo saluda o pregunta cómo estás (ej: "hola", "buenas", "cómo va todo", "mucho trabajo?", "estás brava?"), responde de forma natural y empática, sin forzar la venta. Ejemplos:
-  * Usuario: "hola veci" → "¡Hola! ¿Cómo vas? Cuéntame."
-  * Usuario: "cómo va todo" → "Todo bien, gracias. ¿Y tú? ¿Qué tal tu día?"
-  * Usuario: "mucho trabajo?" → "Uy, un poco, pero bien. ¿Tú también estás a full?"
-  * Usuario: "estás brava?" → "Jaja no, para nada. Tranqui, estoy aquí para lo que necesites."
-- Solo después de esa respuesta natural, si el usuario no menciona productos, puedes agregar suavemente: "¿Buscas algo en particular?" o "¿Te ayudo con algún producto?" pero no es obligatorio.
-- Si el usuario te dice "pareces una IA" o "eres muy seca", admítelo con humor y mejora el tono: "Jaja, a veces me gana el afán de ayudar. Intentaré ser más natural. ¿Qué puedo hacer por ti?"
+REGLAS OBLIGATORIAS:
+- Si el usuario pregunta "cuáles tienes?" o "qué modelos?" y ya mencionó adoquines antes → acción "enviar_catalogo_adoquines" con respuesta vacía (""). No hagas preguntas adicionales.
+- Si pregunta por ubicación o de dónde somos → responde "Somos de Némocon, Cundinamarca." No digas Toscana.
+- Si pide un producto específico (ej: "20*10*6") → envía imágenes de inmediato con una frase breve.
+- Después de enviar imágenes, SIEMPRE pregunta cuántas unidades necesita (a menos que ya haya dado una cantidad válida en la conversación).
+- Cuando el usuario da una cantidad (ej: "100,000" o "10.000"), guarda esa cantidad y ofrece cotización formal. No confundas 10.000 con 10.
+- Si el usuario corrige la cantidad (ej: "10.000 solo es esa cantidad" o "era 10.000"), actualiza la cantidad y ofrece cotización por la nueva cantidad.
+- Tus respuestas deben ser muy cortas (máx 20 palabras).
 
-REGLAS DE VENTAS (SIGUEN IGUAL):
-- Si el usuario pide un producto específico (ej: "adoquines 20x10x6"), responde con saludo breve + lista de tonos + acción "enviar_imagenes".
-- Luego de imágenes, pregunta cantidad.
-- Luego tono, luego envío/recogida, luego cotización.
-- Nunca inventes información. Usa los datos reales del catálogo y ubicación.
-
-FORMATO DE RESPUESTA:
-Siempre responde con un JSON:
+Tu respuesta debe ser JSON:
 {
-  "respuesta": "texto natural para el usuario (puede ser vacío si solo acción)",
-  "accion": "nada | enviar_catalogo | enviar_catalogo_adoquines | enviar_catalogo_fachaletas | enviar_imagenes",
-  "producto_id": "string solo para enviar_imagenes"
+  "respuesta": "texto para el usuario (puede ser vacío)",
+  "accion": "nada" | "enviar_catalogo" | "enviar_catalogo_adoquines" | "enviar_catalogo_fachaletas" | "enviar_imagenes",
+  "producto_id": "string solo si accion es enviar_imagenes"
 }
 
 Catálogo:
@@ -158,21 +149,14 @@ ${catalogoInfo}
 Historial reciente:
 ${session.history.map(m => `${m.role === "user" ? "Usuario" : "Ana"}: ${m.content}`).join("\n")}
 
-EJEMPLOS DE RESPUESTA SOCIAL (obligatorio seguirlos):
-- Usuario: "hola veci" → {"respuesta": "¡Hola! ¿Cómo vas? Cuéntame.", "accion": "nada"}
-- Usuario: "cómo va todo" → {"respuesta": "Todo bien, gracias. ¿Y tú? ¿Qué tal tu día?", "accion": "nada"}
-- Usuario: "mucho trabajo?" → {"respuesta": "Uy, un poco, pero bien. ¿Tú también estás a full?", "accion": "nada"}
-- Usuario: "estás brava?" → {"respuesta": "Jaja no, para nada. Tranqui, estoy aquí para lo que necesites.", "accion": "nada"}
-- Usuario: "suenas como una ia" → {"respuesta": "Jaja, a veces me gana el afán. Intentaré ser más natural. ¿Qué puedo hacer por ti?", "accion": "nada"}
-- Usuario: "bien gracias mucho trabajo?" → {"respuesta": "Qué bien. Un poco de trabajo pero bien. ¿Tú también andas ocupado?", "accion": "nada"}
+Ejemplos:
+- Usuario: "buenas veci como va tiene adoquines?" → {"respuesta": "Todo bien. Claro, tenemos. ¿Qué modelo te interesa?", "accion": "nada"}
+- Usuario: "cuales tienes?" (contexto adoquines) → {"respuesta": "", "accion": "enviar_catalogo_adoquines"}
+- Usuario: "de donde son?" → {"respuesta": "Somos de Némocon, Cundinamarca.", "accion": "nada"}
+- Usuario: "20*10*6" → {"respuesta": "Ahí te van las fotos.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
+- Usuario: "10,000" (después de ver fotos) → {"respuesta": "Dale, te preparo cotización para 10,000 unidades.", "accion": "nada"}
 
-EJEMPLOS DE RESPUESTA DE PRODUCTOS (mantener):
-- Usuario: "buenas veci tiene adoquines 20*10*6?" → {"respuesta": "¡Hola! Claro que sí, tenemos ese modelo en tonos durazno, canelo y matizado. Te muestro fotos.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
-- Usuario: "necesito 100 para cogua" → {"respuesta": "Perfecto, con 100 unidades. ¿Qué tono prefieres? Tenemos durazno, canelo y matizado.", "accion": "nada"}
-- Usuario: "canelo" → {"respuesta": "Dale, canelo es muy bonito. ¿Necesitas envío a Cogua o prefieres recoger en Némocon?", "accion": "nada"}
-- Usuario: "nemocon" → {"respuesta": "Genial, puedes recoger en Cra 4 #9-12, Barrio El Centro, Némocon. Aquí el link de Maps: https://maps.app.goo.gl/anyRAWvMrwqM2jnH7. ¿Quieres cotización formal?", "accion": "nada"}
-
-SOLO RESPONDE CON JSON.
+Solo responde con JSON.
 `;
 
   const respuestaIA = await axios.post(
@@ -183,7 +167,7 @@ SOLO RESPONDE CON JSON.
         { role: "system", content: systemPrompt },
         { role: "user", content: textoUsuario }
       ],
-      temperature: 0.7, // más alta para respuestas más variadas
+      temperature: 0.5,
       response_format: { type: "json_object" }
     },
     {
@@ -208,6 +192,7 @@ SOLO RESPONDE CON JSON.
     session.history.push({ role: "assistant", content: decision.respuesta });
   }
 
+  // Ejecutar acción
   if (decision.accion === "enviar_catalogo") {
     await mostrarCatalogo(from);
   } else if (decision.accion === "enviar_catalogo_adoquines") {
@@ -216,8 +201,23 @@ SOLO RESPONDE CON JSON.
     await mostrarCatalogo(from, "fachaletas");
   } else if (decision.accion === "enviar_imagenes" && decision.producto_id && catalogo[decision.producto_id]) {
     await enviarImagenes(from, decision.producto_id);
+    // Después de imágenes, preguntar cantidad si no se ha confirmado una
+    if (!session.ultimaCantidad || !session.cantidadConfirmada) {
+      await enviarMensaje(from, "¿Cuántas unidades necesitas? Así te ayudo con el precio.");
+      session.history.push({ role: "assistant", content: "¿Cuántas unidades necesitas?" });
+    } else if (session.ultimaCantidad && !session.cotizacionOfrecida) {
+      await enviarMensaje(from, `Con ${session.ultimaCantidad} unidades puedo ayudarte a cotizar. ¿Quieres que te prepare un presupuesto?`);
+      session.cotizacionOfrecida = true;
+      session.history.push({ role: "assistant", content: `Con ${session.ultimaCantidad} unidades...` });
+    }
   } else if (decision.accion === "enviar_imagenes" && (!decision.producto_id || !catalogo[decision.producto_id])) {
     await enviarMensaje(from, "No tengo ese producto. ¿Quieres ver el catálogo?");
+  }
+
+  // Si el usuario dio una nueva cantidad y no se ha ofrecido cotización aún
+  if (session.ultimaCantidad && !session.cotizacionOfrecida && !decision.accion.includes("enviar_imagenes")) {
+    await enviarMensaje(from, `¿Quieres una cotización formal para los ${session.ultimaCantidad} adoquines?`);
+    session.cotizacionOfrecida = true;
   }
 
   logConversacion(from, textoUsuario, decision.respuesta || "[sin texto]", decision.accion);
@@ -261,18 +261,18 @@ app.post("/webhook", async (req, res) => {
         presentado: false,
         ultimaCantidad: null,
         cantidadConfirmada: false,
-        ultimoTono: null,
-        lugarEnvio: null
+        cotizacionOfrecida: false
       });
     }
     const session = sessions.get(from);
 
+    // Primer saludo simple
     const esPrimerMensaje = !session.presentado;
-    const esSoloSaludo = /^(hola|buenas|dime|hey|qué hubo|qué más|saludos?|cómo vas|qué cuentas?|mucho trabajo?|veci|vecino|vecina)$/i.test(text.trim());
+    const esSoloSaludo = /^(hola|buenas|dime|hey|qué hubo|qué más|saludos?|cómo vas|qué cuentas?|mucho trabajo?|veci)$/i.test(text.trim());
 
     if (esPrimerMensaje && esSoloSaludo) {
       session.presentado = true;
-      await enviarMensaje(from, "¡Hola! Soy Ana, de Ladrillera La Toscana (Némocon). Cuéntame, ¿qué estás buscando?");
+      await enviarMensaje(from, "Hola, soy Ana, de Ladrillera La Toscana (Némocon). Cuéntame, ¿qué estás buscando?");
       session.history.push({ role: "assistant", content: "Hola, soy Ana..." });
       return res.sendStatus(200);
     }
@@ -288,7 +288,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Asesora humana y cálida"));
+app.get("/", (req, res) => res.send("Ana IA - Versión profesional con manejo de cantidades"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
