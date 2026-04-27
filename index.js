@@ -16,17 +16,16 @@ const sessions = new Map();
 const processedMessages = new Set();
 
 // ==============================
-// 📦 CATÁLOGO (EDITA SOLO IMÁGENES)
+// 📦 CATÁLOGO
 // ==============================
 const catalogo = {
   adoquin_20x10x6: {
     nombre: "Adoquín 20x10x6",
-    uso: "ideal para exterior",
     rendimiento: 50,
     tonos: ["durazno", "canelo", "matizado"],
     imagenes: [
-      "https://TU-IMAGEN-1.jpg",
-      "https://TU-IMAGEN-2.jpg"
+      "https://TU-IMG-1.jpg",
+      "https://TU-IMG-2.jpg"
     ]
   },
 
@@ -35,27 +34,50 @@ const catalogo = {
     rendimiento: 50,
     tonos: ["durazno", "canelo", "matizado"],
     imagenes: [
-      "https://TU-IMAGEN-1.jpg",
-      "https://TU-IMAGEN-2.jpg"
-    ]
-  },
-
-  fachaleta_cappuccino: {
-    nombre: "Fachaleta Cappuccino",
-    imagenes: [
-      "https://TU-IMAGEN-1.jpg",
-      "https://TU-IMAGEN-2.jpg"
+      "https://TU-IMG-1.jpg",
+      "https://TU-IMG-2.jpg"
     ]
   },
 
   fachaleta_toscano: {
     nombre: "Fachaleta Toscano",
     imagenes: [
-      "https://TU-IMAGEN-1.jpg",
-      "https://TU-IMAGEN-2.jpg"
+      "https://TU-IMG-1.jpg",
+      "https://TU-IMG-2.jpg"
+    ]
+  },
+
+  fachaleta_bianco: {
+    nombre: "Fachaleta Bianco Ártico",
+    imagenes: [
+      "https://TU-IMG-1.jpg",
+      "https://TU-IMG-2.jpg"
     ]
   }
 };
+
+// 📄 PDF catálogo (pon tu link real)
+const CATALOGO_PDF = "https://TU-CATALOGO.pdf";
+
+// ==============================
+// 🧠 NORMALIZAR TEXTO (ERRORES HUMANOS)
+// ==============================
+function normalizarTexto(texto) {
+  return texto
+    .replace(/doquin|doquines|adokines|adoquines|adoqin|adoquin/g, "adoquin")
+    .replace(/ladrilo|ladrilos/g, "ladrillo")
+    .replace(/fachada|fachadas/g, "fachaleta");
+}
+
+// ==============================
+// 🧠 DETECCIÓN INTELIGENTE
+// ==============================
+function detectarProducto(texto) {
+  if (texto.includes("adoquin")) return "adoquin_20x10x6";
+  if (texto.includes("toscano")) return "fachaleta_toscano";
+  if (texto.includes("bianco")) return "fachaleta_bianco";
+  return null;
+}
 
 // ==============================
 // ✅ VERIFY META
@@ -79,7 +101,6 @@ app.post("/webhook", async (req, res) => {
   try {
     const value = req.body?.entry?.[0]?.changes?.[0]?.value;
 
-    // ❌ ignorar estados
     if (value?.statuses) return res.sendStatus(200);
 
     const message = value?.messages?.[0];
@@ -87,11 +108,13 @@ app.post("/webhook", async (req, res) => {
 
     const from = message.from;
     const msgId = message.id;
-    const text = message.text?.body?.toLowerCase().trim();
 
+    let text = message.text?.body?.toLowerCase().trim();
     if (!text) return res.sendStatus(200);
 
-    // ❌ evitar duplicados
+    text = normalizarTexto(text);
+
+    // ❌ duplicados
     if (processedMessages.has(msgId)) return res.sendStatus(200);
     processedMessages.add(msgId);
 
@@ -107,68 +130,52 @@ app.post("/webhook", async (req, res) => {
         history: [],
         producto: null,
         metros: null,
-        ubicacion: null,
-        calculado: false,
-        envioRespondido: false
+        ubicacion: null
       });
     }
 
     const session = sessions.get(from);
 
-    // guardar historial
     session.history.push({ role: "user", content: text });
     if (session.history.length > 6) session.history.shift();
 
     // ==============================
-    // 🔍 DETECCIÓN INTELIGENTE
+    // 🔍 DETECCIÓN
     // ==============================
-    if (text.includes("20") && text.includes("10") && text.includes("6")) {
-      session.producto = "adoquin_20x10x6";
+    const productoDetectado = detectarProducto(texto);
+
+    if (productoDetectado) {
+      session.producto = productoDetectado;
     }
 
-    if (text.includes("20") && text.includes("10") && text.includes("4")) {
-      session.producto = "adoquin_20x10x4";
-    }
-
-    if (text.includes("cappuccino")) {
-      session.producto = "fachaleta_cappuccino";
-    }
-
-    if (text.includes("toscano")) {
-      session.producto = "fachaleta_toscano";
-    }
-
-    // metros
-    if (text.includes("metro")) {
-      const num = parseInt(text);
-      if (num) session.metros = num;
-    }
-
-    // ubicación
-    if (
-      text.includes("cogua") ||
-      text.includes("zipa") ||
-      text.includes("bogota")
-    ) {
-      session.ubicacion = text;
-    }
+    const quiereTodo =
+      text.includes("todo") ||
+      text.includes("todos") ||
+      text.includes("catalogo");
 
     const quiereImagen =
-      text.includes("imagen") ||
       text.includes("foto") ||
-      text.includes("ver") ||
-      text.includes("muestr");
+      text.includes("imagen") ||
+      text.includes("ver");
+
+    const quierePDF =
+      text.includes("pdf") ||
+      text.includes("catalogo completo");
 
     // ==============================
-    // 🖼️ IMÁGENES (REAL)
+    // 📄 ENVIAR PDF
     // ==============================
-    if (quiereImagen && session.producto && catalogo[session.producto]) {
+    if (quierePDF) {
       await axios.post(
         `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
         {
           messaging_product: "whatsapp",
           to: from,
-          text: { body: "mira 👍" }
+          type: "document",
+          document: {
+            link: CATALOGO_PDF,
+            filename: "catalogo.pdf"
+          }
         },
         {
           headers: {
@@ -178,6 +185,43 @@ app.post("/webhook", async (req, res) => {
         }
       );
 
+      return res.sendStatus(200);
+    }
+
+    // ==============================
+    // 📦 MOSTRAR TODO
+    // ==============================
+    if (quiereTodo) {
+      let mensaje = "claro 👍 te muestro lo que manejamos:\n\n";
+
+      for (const key in catalogo) {
+        mensaje += `• ${catalogo[key].nombre}\n`;
+      }
+
+      mensaje += "\nsi quieres fotos dime cuál 👍";
+
+      await axios.post(
+        `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
+        {
+          messaging_product: "whatsapp",
+          to: from,
+          text: { body: mensaje }
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
+
+      return res.sendStatus(200);
+    }
+
+    // ==============================
+    // 🖼️ IMÁGENES
+    // ==============================
+    if (quiereImagen && session.producto && catalogo[session.producto]) {
       for (const img of catalogo[session.producto].imagenes) {
         await axios.post(
           `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -195,70 +239,52 @@ app.post("/webhook", async (req, res) => {
           }
         );
 
-        await new Promise(r => setTimeout(r, 900));
+        await new Promise(r => setTimeout(r, 800));
       }
 
       return res.sendStatus(200);
     }
 
     // ==============================
-    // 🧠 RESPUESTAS DIRECTAS (rápidas)
+    // 🤔 SI NO ENTIENDE BIEN
+    // ==============================
+    if (!session.producto && text.includes("adoquin")) {
+      await enviarMensaje(from, "¿te refieres a adoquines? 👍");
+      return res.sendStatus(200);
+    }
+
+    // ==============================
+    // 🧠 RESPUESTA BASE
     // ==============================
     let reply = null;
 
-    if (session.producto && !session.metros) {
-      reply = "sí 👍 ese es muy usado";
-    }
-
-    if (
-      session.producto &&
-      session.metros &&
-      !session.calculado &&
-      catalogo[session.producto]?.rendimiento
-    ) {
-      const unidades = session.metros * catalogo[session.producto].rendimiento;
-      reply = `para ${session.metros} m² necesitas aprox ${unidades} unidades 👍`;
-      session.calculado = true;
-    }
-
-    if (session.ubicacion && !session.envioRespondido) {
-      reply = `dale 👍 hasta ${session.ubicacion} sí hacemos envío, te reviso el costo`;
-      session.envioRespondido = true;
-    }
-
-    if (text.includes("color") || text.includes("tono")) {
-      const tonos = catalogo[session.producto]?.tonos;
-      if (tonos) {
-        reply = `tenemos ${tonos.join(", ")} 👍`;
-      }
+    if (session.producto) {
+      reply = "sí 👍 ese lo manejamos, si quieres te muestro fotos";
     }
 
     // ==============================
-    // 🤖 IA (CON MEMORIA REAL)
+    // 🤖 IA CON MEMORIA
     // ==============================
     if (!reply) {
-      const systemPrompt = `
-Eres Ana, asesora de Ladrillera La Toscana.
-
-Hablas como una persona real.
-
-Reglas:
-- respuestas cortas
-- natural (ej: "dale", "perfecto", "ya te reviso")
-- no suenas robot
-- no repites preguntas
-- ayudas fácil
-- no presionas venta
-- no das info que no pidan
-- si no entiendes: "qué pena, no te entendí bien"
-`;
-
       const response = await axios.post(
         "https://api.openai.com/v1/chat/completions",
         {
           model: "gpt-4o-mini",
           messages: [
-            { role: "system", content: systemPrompt },
+            {
+              role: "system",
+              content: `
+Eres Ana de Ladrillera La Toscana.
+
+Hablas como persona real.
+
+- corto
+- natural
+- no robot
+- ayudas fácil
+- si no entiendes: "qué pena, no te entendí bien"
+`
+            },
             ...session.history
           ]
         },
@@ -271,40 +297,42 @@ Reglas:
       );
 
       reply = response.data.choices[0].message.content;
-      session.history.push({ role: "assistant", content: reply });
     }
 
     // ==============================
-    // ⏱️ DELAY HUMANO REAL
+    // ⏱️ DELAY HUMANO
     // ==============================
-    const delay = Math.floor(Math.random() * 2500) + 1200;
-    await new Promise(r => setTimeout(r, delay));
+    await new Promise(r => setTimeout(r, Math.random() * 2000 + 1000));
 
-    // ==============================
-    // 📤 RESPUESTA
-    // ==============================
-    await axios.post(
-      `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
-      {
-        messaging_product: "whatsapp",
-        to: from,
-        text: { body: reply }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
+    await enviarMensaje(from, reply);
 
     res.sendStatus(200);
 
   } catch (error) {
-    console.error("ERROR:", error.response?.data || error.message);
+    console.error(error.response?.data || error.message);
     res.sendStatus(200);
   }
 });
+
+// ==============================
+// 📤 FUNCIÓN MENSAJE
+// ==============================
+async function enviarMensaje(to, body) {
+  await axios.post(
+    `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to,
+      text: { body }
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+}
 
 // ==============================
 app.get("/", (req, res) => {
