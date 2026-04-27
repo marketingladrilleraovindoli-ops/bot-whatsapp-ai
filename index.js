@@ -46,14 +46,14 @@ async function enviarMensaje(to, body) {
   );
 }
 
-// Envía solo las imágenes, sin texto adicional (el texto ya lo envió la IA)
 async function enviarImagenes(to, productoId) {
   const item = catalogo[productoId];
   if (!item || !item.imagenes || item.imagenes.length === 0) {
-    await enviarMensaje(to, "Ay, aún no tengo fotos de eso. ¿Te muestro otro?");
+    await enviarMensaje(to, "Aún no tengo fotos de ese producto. ¿Te interesa otro similar?");
     return;
   }
 
+  // Solo enviamos las imágenes, ningún texto adicional (el texto ya lo envió la IA)
   for (const img of item.imagenes) {
     await axios.post(
       `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -65,16 +65,15 @@ async function enviarImagenes(to, productoId) {
       },
       { headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}` } }
     );
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 400));
   }
 }
 
-// Muestra catálogo de forma limpia, con un solo mensaje
 async function mostrarCatalogo(to, categoria = null) {
   let mensaje = "";
   if (categoria === "adoquines") mensaje = "Estos son los adoquines que manejamos:\n\n";
   else if (categoria === "fachaletas") mensaje = "Estas son las fachaletas que tenemos:\n\n";
-  else mensaje = "Mirá, esto es lo que manejamos:\n\n";
+  else mensaje = "Nuestro catálogo:\n\n";
 
   let count = 0;
   for (const key in catalogo) {
@@ -85,18 +84,17 @@ async function mostrarCatalogo(to, categoria = null) {
   }
 
   if (count === 0) {
-    mensaje = "No encontré productos de esa categoría. ¿Quieres ver todo el catálogo?";
+    mensaje = "No encontré productos de esa categoría. ¿Quieres ver el catálogo completo?";
   } else {
-    mensaje += "\nDime cuál querés ver y te mando las fotos.";
+    mensaje += "\n¿De cuál te interesa ver fotos de proyectos?";
   }
   await enviarMensaje(to, mensaje);
 }
 
 async function procesarConIA(textoUsuario, from, session) {
-  // Presentación solo una vez
   if (!session.presentado) {
     session.presentado = true;
-    await enviarMensaje(from, "Hola, soy Ana, de Ladrillera La Toscana. ¿En qué te ayudo?");
+    await enviarMensaje(from, "Hola, soy Ana, de Ladrillera La Toscana. ¿Qué estás buscando?");
     session.history.push({ role: "assistant", content: "Hola, soy Ana..." });
   }
 
@@ -108,20 +106,25 @@ async function procesarConIA(textoUsuario, from, session) {
     .join("\n");
 
   const systemPrompt = `
-Eres Ana, asesora de Ladrillera La Toscana. Hablas como una persona REAL, colombiana normal. Usas lenguaje cotidiano, cercano, sin emojis.
+Eres Ana, asesora experta de Ladrillera La Toscana. Hablas como una profesional cercana, con tono seguro y natural. Sin emojis, sin frases hechas de bot.
 
 REGLAS CLAVE:
-- Tus respuestas deben ser MUY CORTAS, de máximo 20 palabras. Nada de frases largas.
-- Nunca repitas información que ya está en el historial.
-- Si el usuario pide un producto específico (ej: "adoquines 20x10x6"), tu respuesta debe ser solo algo como: "Ahí te mando las fotos. Es perfecto para calles." (muy breve).
-- Si pide el catálogo, tu respuesta debe ser vacía (""). Solo ejecutas la acción correspondiente.
-- Usa frases como: "dale", "listo", "mirá", "ahí te las mando", "claro", "sí, tenemos esos".
-- No uses estructuras rígidas. Sé natural.
+- Tus respuestas deben ser cortas (máximo 20 palabras) y al grano.
+- No uses frases como "ahí te mando las fotos" o "te envío las fotos de". En su lugar, usa expresiones más humanas y con confianza, por ejemplo:
+  * "Te muestro cómo queda en proyectos reales"
+  * "Mira algunos trabajos con ese producto"
+  * "Déjame compartirte imágenes de instalaciones que hemos hecho"
+  * "Te enseño fotos de ese modelo"
+  * "Así se ve colocado en obra"
+- Si el usuario pide catálogo, tu respuesta debe ser un string vacío ("") y solo ejecutas la acción correspondiente.
+- Si pide un producto específico, genera una frase breve y útil que invite a ver las fotos.
+- Usa lenguaje natural: "dale", "claro", "mirá", "sí", "listo", pero sin exagerar.
+- No repitas información que ya está en el historial.
 
 Tu respuesta debe ser un JSON con:
-- "respuesta": string (texto que enviarás al usuario, puede ser vacío "" si no quieres enviar nada).
+- "respuesta": string (puede ser vacío "" si no quieres enviar texto).
 - "accion": "nada", "enviar_catalogo", "enviar_catalogo_adoquines", "enviar_catalogo_fachaletas", o "enviar_imagenes".
-- "producto_id": string (solo si accion es "enviar_imagenes").
+- "producto_id": string (solo para enviar_imagenes).
 
 Catálogo:
 ${catalogoInfo}
@@ -130,11 +133,11 @@ Historial reciente:
 ${session.history.map(m => `${m.role === "user" ? "Usuario" : "Ana"}: ${m.content}`).join("\n")}
 
 Ejemplos:
-- Usuario: "buenos días, tienen adoquines?" → {"respuesta": "Sí, tenemos varios. ¿Buscas alguno en especial?", "accion": "nada"}
+- Usuario: "buenos días, tienen adoquines?" → {"respuesta": "Claro, manejamos varios. ¿Buscas alguna medida en especial?", "accion": "nada"}
 - Usuario: "muéstrame cuales tienes" → {"respuesta": "", "accion": "enviar_catalogo_adoquines"}
-- Usuario: "Adoquín 20x10x3" → {"respuesta": "Ahí te mando las fotos. Es ideal para andenes.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x3"}
+- Usuario: "Adoquín 20x10x3" → {"respuesta": "Te comparto fotos de proyectos con ese modelo. Es muy usado para andenes.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x3"}
 - Usuario: "y fachaleta arquitectonica?" → {"respuesta": "", "accion": "enviar_catalogo_fachaletas"}
-- Usuario: "Fachaleta Bianco Ártico" → {"respuesta": "Linda elección, ahí te van las fotos.", "accion": "enviar_imagenes", "producto_id": "fachaleta_bianco"}
+- Usuario: "Fachaleta Bianco Ártico" → {"respuesta": "Mirá cómo queda colocado en fachadas, se ve muy bien.", "accion": "enviar_imagenes", "producto_id": "fachaleta_bianco"}
 
 Solo responde con JSON.
 `;
@@ -162,18 +165,16 @@ Solo responde con JSON.
   } catch (e) {
     console.error("Error parsing JSON:", contenido);
     decision = {
-      respuesta: "Uy, no te entendí bien, ¿puedes repetirlo?",
+      respuesta: "Uy, no te entendí bien. ¿Podrías repetirlo?",
       accion: "nada"
     };
   }
 
-  // Enviar respuesta textual solo si no está vacía
   if (decision.respuesta && decision.respuesta.trim() !== "") {
     await enviarMensaje(from, decision.respuesta);
     session.history.push({ role: "assistant", content: decision.respuesta });
   }
 
-  // Ejecutar acción (sin enviar texto adicional)
   switch (decision.accion) {
     case "enviar_catalogo":
       await mostrarCatalogo(from);
@@ -188,7 +189,7 @@ Solo responde con JSON.
       if (decision.producto_id && catalogo[decision.producto_id]) {
         await enviarImagenes(from, decision.producto_id);
       } else {
-        await enviarMensaje(from, "Ese producto no lo tengo. ¿Quieres ver el catálogo?");
+        await enviarMensaje(from, "No tengo registro de ese producto. ¿Quieres ver nuestro catálogo?");
       }
       break;
   }
@@ -196,7 +197,9 @@ Solo responde con JSON.
   logConversacion(from, textoUsuario, decision.respuesta || "[sin texto]", decision.accion);
 }
 
-// Webhooks
+// ==============================
+// WEBHOOKS
+// ==============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -240,7 +243,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Personalidad Real y sin duplicados"));
+app.get("/", (req, res) => res.send("Ana IA - Experta en construcción"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
