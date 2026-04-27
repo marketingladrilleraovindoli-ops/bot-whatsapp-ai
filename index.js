@@ -168,14 +168,14 @@ app.post("/webhook", async (req, res) => {
 
     text = normalizarTexto(text);
 
-    // evitar duplicados
+    // ❌ duplicados
     if (processedMessages.has(msgId)) return res.sendStatus(200);
     processedMessages.add(msgId);
 
     console.log("Mensaje:", text);
 
     // ==============================
-    // SESIÓN
+    // 🧠 SESIÓN
     // ==============================
     if (!sessions.has(from)) {
       sessions.set(from, { producto: null });
@@ -184,12 +184,12 @@ app.post("/webhook", async (req, res) => {
     const session = sessions.get(from);
 
     // ==============================
-    // DETECTAR INTENCIÓN
+    // 🔍 INTENCIÓN
     // ==============================
     const productoDetectado = detectarProducto(text);
-    if (productoDetectado) {
-      session.producto = productoDetectado;
-    }
+    if (productoDetectado) session.producto = productoDetectado;
+
+    const esAfirmacion = ["si", "sí", "dale", "ok"].includes(text);
 
     const quiereTodo =
       text.includes("todo") ||
@@ -250,11 +250,20 @@ app.post("/webhook", async (req, res) => {
     }
 
     // ==============================
-    // 🖼️ MOSTRAR IMÁGENES
+    // 🖼️ IMÁGENES
     // ==============================
-    if (quiereImagen) {
+    if (quiereImagen || esAfirmacion) {
+
       if (!session.producto || session.producto === "GENERAL_ADOQUIN") {
-        await enviarMensaje(from, "cuál referencia quieres ver? 👍");
+        let msg = "tengo estas referencias:\n\n";
+
+        for (const key in catalogo) {
+          msg += `• ${catalogo[key].nombre}\n`;
+        }
+
+        msg += "\ndime cuál quieres ver 👍";
+
+        await enviarMensaje(from, msg);
         return res.sendStatus(200);
       }
 
@@ -263,19 +272,18 @@ app.post("/webhook", async (req, res) => {
     }
 
     // ==============================
-    // RESPUESTA INTELIGENTE
+    // 💬 RESPUESTA BASE
     // ==============================
     let reply = null;
 
     if (session.producto === "GENERAL_ADOQUIN") {
-      reply = "tenemos varios adoquines 👍 quieres que te muestre referencias?";
+      reply = "tenemos varios 👍 quieres que te muestre referencias?";
     }
 
-    if (catalogo[session.producto]) {
-      reply = `${catalogo[session.producto].nombre} 👍 quieres fotos o info?`;
+    else if (catalogo[session.producto] && !esAfirmacion) {
+      reply = `${catalogo[session.producto].nombre} 👍`;
     }
 
-    // fallback IA
     if (!reply) {
       reply = "qué necesitas? 👍";
     }
