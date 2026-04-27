@@ -14,6 +14,17 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 const sessions = new Map();
 const processedMessages = new Set();
 
+// Estado inicial del pedido para cada usuario
+const defaultPedido = {
+  productoId: null,
+  productoNombre: null,
+  tonalidad: null,
+  cantidad: null,
+  ubicacion: null,
+  tonosDisponibles: [],
+  ultimoProductoMostrado: null
+};
+
 function logConversacion(from, userMsg, botResp, accion) {
   const logLine = JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -29,7 +40,8 @@ function normalizarTexto(texto) {
   return texto
     .toLowerCase()
     .replace(/doquin|doquines|adokines|adoqin|adoquines/g, "adoquin")
-    .replace(/fachada|fachadas|fachaleta arquitectonica|fachaleta arquitectónica/g, "fachaleta");
+    .replace(/fachada|fachadas|fachaleta arquitectonica|fachaleta arquitectónica/g, "fachaleta")
+    .trim();
 }
 
 async function enviarMensaje(to, body) {
@@ -50,7 +62,7 @@ async function enviarImagenes(to, productoId) {
   const item = catalogo[productoId];
   if (!item || !item.imagenes || item.imagenes.length === 0) {
     await enviarMensaje(to, "Aún no tengo fotos de ese producto. ¿Te interesa otro similar?");
-    return;
+    return false;
   }
 
   for (const img of item.imagenes) {
@@ -66,33 +78,75 @@ async function enviarImagenes(to, productoId) {
     );
     await new Promise((r) => setTimeout(r, 400));
   }
+  return true;
 }
 
-async function mostrarCatalogo(to, categoria = null) {
+async function enviarImagenesConSeguimiento(to, productoId, session) {
+  const item = catalogo[productoId];
+  if (!item) {
+    await enviarMensaje(to, "No conozco ese producto. ¿Quieres ver el catálogo?");
+    return false;
+  }
+
+  // Enviar imágenes
+  const ok = await enviarImagenes(to, productoId);
+  if (!ok) return false;
+
+  // Actualizar sesión
+  session.pedido.productoId = productoId;
+  session.pedido.productoNombre = item.nombre;
+  session.pedido.tonosDisponibles = item.tonos || [];
+
+  // Preguntar siguiente dato faltante (prioridad: tonalidad -> cantidad -> ubicación)
+  if (session.pedido.tonosDisponibles.length > 0 && !session.pedido.tonalidad) {
+    await enviarMensaje(to, `✅ Genial. Ese producto viene en estos tonos: ${session.pedido.tonosDisponibles.join(", ")}. ¿Cuál te gusta?`);
+    return true;
+  }
+  if (!session.pedido.cantidad) {
+    await enviarMensaje(to, "¿Cuántas unidades necesitas? (Ej: 10.000)");
+    return true;
+  }
+  if (!session.pedido.ubicacion) {
+    await preguntarUbicacion(to, session);
+    return true;
+  }
+  // Si ya tiene todos los datos
+  await enviarMensaje(to, `Perfecto. Tengo tu pedido: ${session.pedido.productoNombre}, ${session.pedido.tonalidad || "tono no especificado"}, ${session.pedido.cantidad} unidades, envío a ${session.pedido.ubicacion}. ¿Quieres una cotización formal?`);
+  session.cotizacionOfrecida = true;
+  return true;
+}
+
+async function preguntarUbicacion(to, session) {
+  await enviarMensaje(to, "📍 ¿Dónde necesitas la entrega? Puedes escribir la dirección completa o, si estás en Némocon, comparte tu ubicación de Google Maps.");
+}
+
+async function mostrarCatalogoEnTexto(to, categoria = null) {
+  let productos = [];
   let mensaje = "";
-  if (categoria === "adoquines") mensaje = "Estos son los adoquines que manejamos:\n\n";
-  else if (categoria === "fachaletas") mensaje = "Estas son las fachaletas que tenemos:\n\n";
-  else mensaje = "Nuestro catálogo:\n\n";
 
-  let count = 0;
-  for (const key in catalogo) {
-    if (categoria === "adoquines" && !key.includes("adoquin")) continue;
-    if (categoria === "fachaletas" && !key.includes("fachaleta")) continue;
-    mensaje += `- ${catalogo[key].nombre}\n`;
-    count++;
-  }
-
-  if (count === 0) {
-    mensaje = "No encontré productos de esa categoría. ¿Quieres ver el catálogo completo?";
+  if (categoria === "adoquines") {
+    productos = Object.entries(catalogo).filter(([id]) => id.startsWith("adoquin"));
+    mensaje = "🏗️ *ADOQUINES disponibles:*\n\n";
+  } else if (categoria === "fachaletas") {
+    productos = Object.entries(catalogo).filter(([id]) => id.startsWith("fachaleta"));
+    mensaje = "🧱 *FACHALETAS (Thinbrick) disponibles:*\n\n";
   } else {
-    mensaje += "\nDime el nombre y te muestro fotos de proyectos reales.";
+    productos = Object.entries(catalogo);
+    mensaje = "📦 *Catálogo completo Ladrillera La Toscana:*\n\n";
   }
+
+  let idx = 1;
+  for (const [id, prod] of productos) {
+    mensaje += `${idx}. *${prod.nombre}*`;
+    if (prod.tonos && prod.tonos.length) mensaje += ` (Tonos: ${prod.tonos.join(", ")})`;
+    mensaje += "\n";
+    idx++;
+  }
+  mensaje += "\n✍️ Responde con el *nombre* o el *número* del producto que te interesa.";
   await enviarMensaje(to, mensaje);
 }
 
-// Detección robusta de cantidades (soporta 10.000, 100,000, 1000, etc.)
 function detectarCantidad(texto) {
-  // Busca números con puntos o comas (ej: 10.000, 100,000) y también números simples
   const match = texto.match(/(\d{1,3}(?:[.,]\d{3})*(?:\.\d+)?)/);
   if (match) {
     let numStr = match[1].replace(/\./g, '').replace(',', '');
@@ -106,41 +160,54 @@ async function procesarConIA(textoUsuario, from, session) {
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
-  // Detectar cantidad actualizada
+  // Detectar cantidad y actualizar pedido automáticamente
   const nuevaCantidad = detectarCantidad(textoUsuario);
   if (nuevaCantidad !== null) {
-    session.ultimaCantidad = nuevaCantidad;
-    session.cantidadConfirmada = false;
+    session.pedido.cantidad = nuevaCantidad;
   }
 
-  // Si el usuario está corrigiendo la cantidad (ej: "10.000 solo es esa cantidad") marcar para no preguntar de nuevo
-  if (/solo es esa cantidad|corregir|no es|habia dicho/i.test(textoUsuario) && session.ultimaCantidad) {
-    session.cantidadConfirmada = true;
-  }
+  // Construir estado del pedido para el prompt
+  const estadoPedido = `
+ESTADO ACTUAL DEL PEDIDO:
+- Producto: ${session.pedido.productoNombre || "no definido"} (id: ${session.pedido.productoId || "ninguno"})
+- Tonalidad: ${session.pedido.tonalidad || "no definida"}
+- Cantidad: ${session.pedido.cantidad || "no definida"}
+- Ubicación: ${session.pedido.ubicacion || "no definida"}
+
+DATOS QUE FALTAN POR PREGUNTAR (prioriza en este orden):
+${!session.pedido.productoNombre ? "- Producto" : ""}
+${(!session.pedido.tonalidad && session.pedido.tonosDisponibles.length > 0) ? "- Tonalidad (opciones: " + session.pedido.tonosDisponibles.join(", ") + ")" : ""}
+${!session.pedido.cantidad ? "- Cantidad (en unidades)" : ""}
+${!session.pedido.ubicacion ? "- Ubicación de entrega" : ""}
+`;
 
   const catalogoInfo = Object.entries(catalogo)
     .map(([id, prod]) => `id: ${id}, nombre: ${prod.nombre}`)
     .join("\n");
 
   const systemPrompt = `
-Eres Ana, asesora de Ladrillera La Toscana. Somos una empresa colombiana ubicada en Némocon (Cundinamarca). NO inventes ubicaciones. Si no sabes algo, di que consultes nuestra página web o que te comunico con un asesor.
+Eres Ana, asesora de Ladrillera La Toscana. Somos una empresa colombiana ubicada en Némocon (Cundinamarca). NO inventes ubicaciones. Hablas de forma muy humana, cálida, usas "jaja", "uy", "dale", "listo", "qué bien". Nunca eres seca ni robótica.
 
-Hablas de forma muy humana, cálida, usas "jaja", "uy", "dale", "listo", "qué bien". Nunca eres seca ni robótica.
+${estadoPedido}
 
 REGLAS OBLIGATORIAS:
-- Si el usuario pregunta "cuáles tienes?" o "qué modelos?" y ya mencionó adoquines antes → acción "enviar_catalogo_adoquines" con respuesta vacía (""). No hagas preguntas adicionales.
-- Si pregunta por ubicación o de dónde somos → responde "Somos de Némocon, Cundinamarca." No digas Toscana.
-- Si pide un producto específico (ej: "20*10*6") → envía imágenes de inmediato con una frase breve.
-- Después de enviar imágenes, SIEMPRE pregunta cuántas unidades necesita (a menos que ya haya dado una cantidad válida en la conversación).
-- Cuando el usuario da una cantidad (ej: "100,000" o "10.000"), guarda esa cantidad y ofrece cotización formal. No confundas 10.000 con 10.
-- Si el usuario corrige la cantidad (ej: "10.000 solo es esa cantidad" o "era 10.000"), actualiza la cantidad y ofrece cotización por la nueva cantidad.
-- Tus respuestas deben ser muy cortas (máx 20 palabras).
+- Si el usuario NO ha elegido producto y pregunta "qué tienes?" o "cuáles tienes?" o "muéstrame", RESPONDE con accion "mostrar_catalogo_texto" (sin especificar categoría) o "mostrar_adoquines_texto" si mencionó adoquines.
+- Si el usuario da el NOMBRE exacto o aproximado de un producto (ej: "20x10x6", "adoquín ecológico", "cappuccino"), asigna accion "enviar_imagenes" con el producto_id correspondiente.
+- Si el usuario dice un número de la lista (ej: "el 3"), busca el producto por índice y envía imágenes.
+- Si ya se mostraron imágenes y faltan datos, NO repitas preguntas. Usa el estado para saber qué falta.
+- Si el producto tiene varios tonos y el usuario menciona un tono válido, actualiza tonalidad con accion "actualizar_tonalidad".
+- Si el usuario da una cantidad (números grandes como 10.000 o 1000), actualiza cantidad con accion "actualizar_cantidad".
+- Si el usuario da una dirección (calle, carrera, etc.) o dice "Némocon" o "acá en Némocon", actualiza ubicación con accion "actualizar_ubicacion".
+- Tus respuestas deben ser muy cortas (máx 25 palabras) y amables.
 
-Tu respuesta debe ser JSON:
+Tu respuesta debe ser JSON exacto:
 {
-  "respuesta": "texto para el usuario (puede ser vacío)",
-  "accion": "nada" | "enviar_catalogo" | "enviar_catalogo_adoquines" | "enviar_catalogo_fachaletas" | "enviar_imagenes",
-  "producto_id": "string solo si accion es enviar_imagenes"
+  "respuesta": "texto para el usuario (puede ser vacío si solo ejecutas acción)",
+  "accion": "nada" | "mostrar_catalogo_texto" | "mostrar_adoquines_texto" | "mostrar_fachaletas_texto" | "enviar_imagenes" | "actualizar_tonalidad" | "actualizar_cantidad" | "actualizar_ubicacion",
+  "producto_id": "solo para enviar_imagenes",
+  "tonalidad_valor": "solo para actualizar_tonalidad",
+  "cantidad_valor": 0,
+  "ubicacion_valor": "string"
 }
 
 Catálogo:
@@ -148,76 +215,101 @@ ${catalogoInfo}
 
 Historial reciente:
 ${session.history.map(m => `${m.role === "user" ? "Usuario" : "Ana"}: ${m.content}`).join("\n")}
-
-Ejemplos:
-- Usuario: "buenas veci como va tiene adoquines?" → {"respuesta": "Todo bien. Claro, tenemos. ¿Qué modelo te interesa?", "accion": "nada"}
-- Usuario: "cuales tienes?" (contexto adoquines) → {"respuesta": "", "accion": "enviar_catalogo_adoquines"}
-- Usuario: "de donde son?" → {"respuesta": "Somos de Némocon, Cundinamarca.", "accion": "nada"}
-- Usuario: "20*10*6" → {"respuesta": "Ahí te van las fotos.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
-- Usuario: "10,000" (después de ver fotos) → {"respuesta": "Dale, te preparo cotización para 10,000 unidades.", "accion": "nada"}
-
-Solo responde con JSON.
 `;
 
-  const respuestaIA = await axios.post(
-    "https://api.openai.com/v1/chat/completions",
-    {
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: textoUsuario }
-      ],
-      temperature: 0.5,
-      response_format: { type: "json_object" }
-    },
-    {
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
-    }
-  );
-
-  const contenido = respuestaIA.data.choices[0].message.content;
   let decision;
   try {
+    const respuestaIA = await axios.post(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: textoUsuario }
+        ],
+        temperature: 0.5,
+        response_format: { type: "json_object" }
+      },
+      {
+        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
+      }
+    );
+    const contenido = respuestaIA.data.choices[0].message.content;
     decision = JSON.parse(contenido);
   } catch (e) {
-    console.error("Error parsing JSON:", contenido);
+    console.error("Error llamando a IA o parseando:", e);
     decision = {
       respuesta: "Uy, no te entendí bien. ¿Puedes repetirlo?",
       accion: "nada"
     };
   }
 
+  // Enviar respuesta textual si existe
   if (decision.respuesta && decision.respuesta.trim() !== "") {
     await enviarMensaje(from, decision.respuesta);
     session.history.push({ role: "assistant", content: decision.respuesta });
   }
 
-  // Ejecutar acción
-  if (decision.accion === "enviar_catalogo") {
-    await mostrarCatalogo(from);
-  } else if (decision.accion === "enviar_catalogo_adoquines") {
-    await mostrarCatalogo(from, "adoquines");
-  } else if (decision.accion === "enviar_catalogo_fachaletas") {
-    await mostrarCatalogo(from, "fachaletas");
-  } else if (decision.accion === "enviar_imagenes" && decision.producto_id && catalogo[decision.producto_id]) {
-    await enviarImagenes(from, decision.producto_id);
-    // Después de imágenes, preguntar cantidad si no se ha confirmado una
-    if (!session.ultimaCantidad || !session.cantidadConfirmada) {
-      await enviarMensaje(from, "¿Cuántas unidades necesitas? Así te ayudo con el precio.");
-      session.history.push({ role: "assistant", content: "¿Cuántas unidades necesitas?" });
-    } else if (session.ultimaCantidad && !session.cotizacionOfrecida) {
-      await enviarMensaje(from, `Con ${session.ultimaCantidad} unidades puedo ayudarte a cotizar. ¿Quieres que te prepare un presupuesto?`);
-      session.cotizacionOfrecida = true;
-      session.history.push({ role: "assistant", content: `Con ${session.ultimaCantidad} unidades...` });
-    }
-  } else if (decision.accion === "enviar_imagenes" && (!decision.producto_id || !catalogo[decision.producto_id])) {
-    await enviarMensaje(from, "No tengo ese producto. ¿Quieres ver el catálogo?");
-  }
-
-  // Si el usuario dio una nueva cantidad y no se ha ofrecido cotización aún
-  if (session.ultimaCantidad && !session.cotizacionOfrecida && !decision.accion.includes("enviar_imagenes")) {
-    await enviarMensaje(from, `¿Quieres una cotización formal para los ${session.ultimaCantidad} adoquines?`);
-    session.cotizacionOfrecida = true;
+  // Ejecutar acciones
+  switch (decision.accion) {
+    case "mostrar_catalogo_texto":
+      await mostrarCatalogoEnTexto(from);
+      break;
+    case "mostrar_adoquines_texto":
+      await mostrarCatalogoEnTexto(from, "adoquines");
+      break;
+    case "mostrar_fachaletas_texto":
+      await mostrarCatalogoEnTexto(from, "fachaletas");
+      break;
+    case "enviar_imagenes":
+      if (decision.producto_id && catalogo[decision.producto_id]) {
+        await enviarImagenesConSeguimiento(from, decision.producto_id, session);
+      } else {
+        await enviarMensaje(from, "No encontré ese producto. ¿Quieres ver el catálogo completo?");
+      }
+      break;
+    case "actualizar_tonalidad":
+      if (decision.tonalidad_valor) {
+        session.pedido.tonalidad = decision.tonalidad_valor;
+        await enviarMensaje(from, `✅ Tono ${decision.tonalidad_valor} anotado.`);
+        // Continuar con lo que falta
+        if (!session.pedido.cantidad) {
+          await enviarMensaje(from, "¿Cuántas unidades necesitas?");
+        } else if (!session.pedido.ubicacion) {
+          await preguntarUbicacion(from, session);
+        } else {
+          await enviarMensaje(from, `Listo. Tengo todo. ¿Quieres una cotización formal?`);
+          session.cotizacionOfrecida = true;
+        }
+      }
+      break;
+    case "actualizar_cantidad":
+      if (decision.cantidad_valor && decision.cantidad_valor > 0) {
+        session.pedido.cantidad = decision.cantidad_valor;
+        await enviarMensaje(from, `✅ Cantidad: ${decision.cantidad_valor} unidades.`);
+        if (!session.pedido.ubicacion) {
+          await preguntarUbicacion(from, session);
+        } else {
+          await enviarMensaje(from, `Genial. ¿Te preparo una cotización formal?`);
+          session.cotizacionOfrecida = true;
+        }
+      }
+      break;
+    case "actualizar_ubicacion":
+      if (decision.ubicacion_valor) {
+        session.pedido.ubicacion = decision.ubicacion_valor;
+        await enviarMensaje(from, `✅ Dirección registrada: ${decision.ubicacion_valor}.`);
+        if (session.pedido.productoNombre && session.pedido.cantidad) {
+          await enviarMensaje(from, `Perfecto, ya tengo todos los datos. ¿Quieres que te prepare una cotización formal?`);
+          session.cotizacionOfrecida = true;
+        } else {
+          await enviarMensaje(from, "Con eso ya vamos avanzando. ¿Algo más que necesites?");
+        }
+      }
+      break;
+    default:
+      // Si no hay acción específica pero faltan datos, la IA ya debería haber preguntado
+      break;
   }
 
   logConversacion(from, textoUsuario, decision.respuesta || "[sin texto]", decision.accion);
@@ -259,21 +351,21 @@ app.post("/webhook", async (req, res) => {
       sessions.set(from, {
         history: [],
         presentado: false,
-        ultimaCantidad: null,
-        cantidadConfirmada: false,
+        pedido: JSON.parse(JSON.stringify(defaultPedido)),
         cotizacionOfrecida: false
       });
     }
     const session = sessions.get(from);
 
-    // Primer saludo simple
+    // Primer saludo con iniciativa: mostrar catálogo completo al inicio
     const esPrimerMensaje = !session.presentado;
     const esSoloSaludo = /^(hola|buenas|dime|hey|qué hubo|qué más|saludos?|cómo vas|qué cuentas?|mucho trabajo?|veci)$/i.test(text.trim());
 
     if (esPrimerMensaje && esSoloSaludo) {
       session.presentado = true;
-      await enviarMensaje(from, "Hola, soy Ana, de Ladrillera La Toscana (Némocon). Cuéntame, ¿qué estás buscando?");
-      session.history.push({ role: "assistant", content: "Hola, soy Ana..." });
+      await enviarMensaje(from, "¡Hola! Soy Ana, de Ladrillera La Toscana (Némocon). Para ayudarte mejor, te muestro nuestros productos:");
+      await mostrarCatalogoEnTexto(from); // Iniciativa proactiva
+      session.history.push({ role: "assistant", content: "Hola, soy Ana. (mostró catálogo)" });
       return res.sendStatus(200);
     }
 
@@ -288,7 +380,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Versión profesional con manejo de cantidades"));
+app.get("/", (req, res) => res.send("Ana IA - Versión proactiva con recolección de producto, tono, cantidad y ubicación"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
