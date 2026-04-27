@@ -142,7 +142,7 @@ app.post("/webhook", async (req, res) => {
     // ==============================
     // 🔍 DETECCIÓN
     // ==============================
-    const productoDetectado = detectarProducto(texto);
+    const productoDetectado = detectarProducto(text);
 
     if (productoDetectado) {
       session.producto = productoDetectado;
