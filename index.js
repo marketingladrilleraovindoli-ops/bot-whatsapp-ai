@@ -11,16 +11,14 @@ app.use(express.json());
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 
-// Información real de la empresa
-const EMPRESA = {
-  nombre: "Ladrillera La Toscana",
-  ciudad: "Némocon",
-  direccion: "Cra 4 #9-12, Barrio El Centro, Némocon, Cundinamarca",
-  mapsLink: "https://maps.app.goo.gl/anyRAWvMrwqM2jnH7"  // Link correcto proporcionado por el usuario
-};
-
 const sessions = new Map();
 const processedMessages = new Set();
+
+// Datos fijos de la empresa
+const UBICACION = {
+  direccion: "Cra 4 #9-12, Barrio El Centro, Némocon, Cundinamarca",
+  mapsLink: "https://maps.app.goo.gl/anyRAWvMrwqM2jnH7"
+};
 
 function logConversacion(from, userMsg, botResp, accion) {
   const logLine = JSON.stringify({
@@ -37,7 +35,8 @@ function normalizarTexto(texto) {
   return texto
     .toLowerCase()
     .replace(/doquin|doquines|adokines|adoqin|adoquines/g, "adoquin")
-    .replace(/fachada|fachadas|fachaleta arquitectonica|fachaleta arquitectónica/g, "fachaleta");
+    .replace(/fachada|fachadas|fachaleta arquitectonica|fachaleta arquitectónica/g, "fachaleta")
+    .replace(/\*/g, "x");  // convierte 20*10*6 a 20x10x6
 }
 
 async function enviarMensaje(to, body) {
@@ -99,6 +98,7 @@ async function mostrarCatalogo(to, categoria = null) {
 }
 
 function detectarCantidad(texto) {
+  // soporta 14.000 , 10000 , 10.000 , 100,000
   const match = texto.match(/(\d{1,3}(?:[.,]\d{3})*(?:\.\d+)?)/);
   if (match) {
     let numStr = match[1].replace(/\./g, '').replace(',', '');
@@ -126,24 +126,34 @@ async function procesarConIA(textoUsuario, from, session) {
     })
     .join("\n");
 
-  // Datos fijos de la empresa (para que la IA no invente)
-  const ubicacionInfo = `${EMPRESA.direccion}. Google Maps: ${EMPRESA.mapsLink}`;
-
   const systemPrompt = `
-Eres Ana, asesora de ${EMPRESA.nombre}, ubicada en ${ubicacionInfo}. Hablas como una persona real, muy cálida, alegre y servicial. Usas "jaja", "uy", "qué bien", "dale", "listo", "claro que sí". NUNCA respondas de forma seca o tipo robot. SIEMPRE saluda al inicio de la conversación o si el usuario te saluda.
+Eres Ana, asesora de Ladrillera La Toscana. Ubicados en Némocon, Cundinamarca (dirección exacta: ${UBICACION.direccion}, Maps: ${UBICACION.mapsLink}). Hablas como una persona real, muy cálida, alegre y servicial. Usas "jaja", "uy", "qué bien", "dale", "listo", "claro que sí". NUNCA respondas de forma seca. Tus respuestas deben ser naturales y breves (máx 30 palabras) pero completas.
 
-REGLAS CLAVE:
-- Si el usuario pide un producto específico (nombre o medida), responde primero con un saludo cálido breve y luego DILE que le muestras fotos. EJECUTA acción "enviar_imagenes" con el producto_id correspondiente. NO preguntes tono ni cantidad antes de las fotos.
-- Después de enviar las fotos (en la siguiente interacción), pregunta amablemente cuántas unidades necesita.
-- Luego pregunta el tono (si el producto tiene tonos). Si el producto no tiene tonos, omite este paso.
-- Después pregunta si necesita envío o recogerá en Némocon.
-- Solo cuando tengas todos los datos, ofrece cotización formal.
-- Para preguntas sobre ubicación o dirección, responde con la información exacta: "${EMPRESA.direccion} y el link de Maps es ${EMPRESA.mapsLink}". No inventes otro link.
-- Si el usuario comparte un link de Maps o dirección, agradécele y usa el link que él dio, no repitas el tuyo.
+REGLAS ESTRICTAS:
+1. Si el usuario saluda y además pide un producto específico (ej: "buenas veci tiene adoquines 20x10x6?"), responde con saludo breve + entusiasmo + lista de tonos si existen + acción "enviar_imagenes". NO preguntes si quiere fotos, solo envía.
+   Ejemplo: "¡Hola! Claro que sí, tenemos ese modelo en tonos durazno, canelo y matizado. Te muestro fotos."
 
-Tu respuesta debe ser JSON con:
+2. Después de enviar imágenes, la IA debe preguntar cantidad: "¿Cuántas unidades necesitas?"
+
+3. Cuando el usuario da una cantidad, confirma y pregunta el tono (si existe más de un tono): "Perfecto, con [cantidad] unidades. ¿Qué tono prefieres? Tenemos [lista tonos]."
+
+4. Después del tono, pregunta si es envío o recogida: "¿Necesitas envío a alguna ciudad o prefieres recoger en Némocon?"
+
+5. Si el usuario dice "recoger" o "recojo", responde con la dirección exacta y el link de Maps: "Genial, puedes recoger en ${UBICACION.direccion}. Aquí está el link de Maps: ${UBICACION.mapsLink}"
+
+6. Si el usuario dice "envío", pregúntale la ciudad: "¿A qué ciudad necesitas el envío?"
+
+7. Una vez que tengas: producto, cantidad, tono y lugar (ciudad de envío o confirmación de recogida), ofrece cotización: "Listo, con [producto], [cantidad] unidades, tono [tono] y [lugar]. ¿Quieres que te prepare una cotización formal?"
+
+8. Si el usuario corrige algún dato (cantidad, tono, lugar), actualiza la sesión y confirma sin repetir toda la lista.
+
+9. NUNCA inventes información. Si no sabes algo, di: "No estoy segura, mejor consulta nuestra web https://ladrilleralatoscana.com/ o te conecto con un asesor."
+
+10. No envíes mensajes duplicados. La acción "enviar_imagenes" solo envía imágenes, sin texto adicional. El texto de presentación ya lo generó la IA.
+
+Tu respuesta debe ser un JSON con:
 {
-  "respuesta": "string (puede vacío si solo acción)",
+  "respuesta": "string (puede ser vacío si solo acción)",
   "accion": "nada | enviar_catalogo | enviar_catalogo_adoquines | enviar_catalogo_fachaletas | enviar_imagenes",
   "producto_id": "string solo para enviar_imagenes"
 }
@@ -154,11 +164,11 @@ ${catalogoInfo}
 Historial reciente:
 ${session.history.map(m => `${m.role === "user" ? "Usuario" : "Ana"}: ${m.content}`).join("\n")}
 
-Ejemplos de respuestas HUMANAS y correctas:
-- Usuario: "buenas veci tiene adoquines 20*10*6?" → {"respuesta": "¡Hola! Claro que sí, tenemos ese modelo. Te muestro fotos.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
-- Usuario: "necesito 74 para chia" (después de fotos) → {"respuesta": "¡Perfecto! Con 74 unidades se ve muy bien. ¿Qué tono te interesa? Tenemos durazno, canelo y matizado.", "accion": "nada"}
-- Usuario: "canelo" → {"respuesta": "Dale, canelo es bonito. ¿Necesitas envío a Chía o prefieres recoger en Némocon?", "accion": "nada"}
-- Usuario: "en que parte de nemocon" → {"respuesta": "Estamos en ${EMPRESA.direccion}. Aquí tienes el link exacto de Maps: ${EMPRESA.mapsLink}", "accion": "nada"}
+Ejemplos de JSON correcto (fijate en la naturalidad):
+- Usuario: "buenas veci tiene adoquines 20*10*6?" → {"respuesta": "¡Hola! Claro que sí, tenemos ese modelo en tonos durazno, canelo y matizado. Te muestro fotos.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
+- Usuario: "necesito 74 para chia" (después de fotos) → {"respuesta": "Perfecto, con 74 unidades. ¿Qué tono prefieres? Tenemos durazno, canelo y matizado.", "accion": "nada"}
+- Usuario: "canelo" → {"respuesta": "Dale, canelo es muy bonito. ¿Necesitas envío a Chía o prefieres recoger en Némocon?", "accion": "nada"}
+- Usuario: "recoger en nemocon" → {"respuesta": "Genial, puedes recoger en Cra 4 #9-12, Barrio El Centro, Némocon. Aquí el link de Maps: https://maps.app.goo.gl/anyRAWvMrwqM2jnH7. ¿Quieres cotización formal?", "accion": "nada"}
 
 Solo responde con JSON.
 `;
@@ -196,7 +206,6 @@ Solo responde con JSON.
     session.history.push({ role: "assistant", content: decision.respuesta });
   }
 
-  // Ejecutar acción
   if (decision.accion === "enviar_catalogo") {
     await mostrarCatalogo(from);
   } else if (decision.accion === "enviar_catalogo_adoquines") {
@@ -212,7 +221,9 @@ Solo responde con JSON.
   logConversacion(from, textoUsuario, decision.respuesta || "[sin texto]", decision.accion);
 }
 
+// ==============================
 // WEBHOOKS
+// ==============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -248,9 +259,8 @@ app.post("/webhook", async (req, res) => {
         presentado: false,
         ultimaCantidad: null,
         cantidadConfirmada: false,
-        cotizacionOfrecida: false,
-        tono: null,
-        lugar_envio: null
+        ultimoTono: null,
+        lugarEnvio: null
       });
     }
     const session = sessions.get(from);
@@ -276,7 +286,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Versión con datos reales y sin dobles"));
+app.get("/", (req, res) => res.send("Ana IA - Versión Definitiva con Tonos, Ubicación y Cotización"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
