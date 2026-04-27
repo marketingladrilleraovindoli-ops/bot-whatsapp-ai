@@ -11,6 +11,14 @@ app.use(express.json());
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 
+// Información real de la empresa
+const EMPRESA = {
+  nombre: "Ladrillera La Toscana",
+  ciudad: "Némocon",
+  direccion: "Cra 4 #9-12, Barrio El Centro, Némocon, Cundinamarca",
+  mapsLink: "https://maps.app.goo.gl/anyRAWvMrwqM2jnH7"  // Link correcto proporcionado por el usuario
+};
+
 const sessions = new Map();
 const processedMessages = new Set();
 
@@ -100,11 +108,6 @@ function detectarCantidad(texto) {
   return null;
 }
 
-function esEnlaceCompartido(texto) {
-  const enlaces = /https?:\/\/[^\s]+/i;
-  return enlaces.test(texto);
-}
-
 async function procesarConIA(textoUsuario, from, session) {
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 12) session.history = session.history.slice(-12);
@@ -115,51 +118,32 @@ async function procesarConIA(textoUsuario, from, session) {
     session.cantidadConfirmada = false;
   }
 
-  // Manejar enlaces compartidos (ubicación o web)
-  if (esEnlaceCompartido(textoUsuario)) {
-    if (textoUsuario.includes("google") || textoUsuario.includes("maps")) {
-      await enviarMensaje(from, "¡Gracias! Esa es nuestra ubicación exacta en Némocon. Si la gente necesita venir, estamos en la Cra 4 #9-12, Barrio El Centro. ¿Necesitas ayuda con algo más?");
-    } else if (textoUsuario.includes("ladrilleralatoscana.com")) {
-      await enviarMensaje(from, "Sí, esa es nuestra página web. Ahí pueden ver más detalles de productos y contacto. ¿Quieres que te ayude con alguna cotización?");
-    } else {
-      await enviarMensaje(from, "Gracias por compartir el enlace. ¿Necesitas algo específico de nuestros productos?");
-    }
-    session.history.push({ role: "assistant", content: "Respuesta a enlace compartido" });
-    return;
-  }
-
   const catalogoInfo = Object.entries(catalogo)
     .map(([id, prod]) => {
       let info = `id: ${id}, nombre: ${prod.nombre}`;
       if (prod.tonos) info += `, tonos: ${prod.tonos.join(", ")}`;
-      if (prod.rendimiento) info += `, rendimiento: ${prod.rendimiento} und/m2`;
       return info;
     })
     .join("\n");
 
+  // Datos fijos de la empresa (para que la IA no invente)
+  const ubicacionInfo = `${EMPRESA.direccion}. Google Maps: ${EMPRESA.mapsLink}`;
+
   const systemPrompt = `
-Eres Ana, asesora de Ladrillera La Toscana. 
-INFORMACIÓN OFICIAL DE LA EMPRESA:
-- Ubicación: Cra 4 #9-12, Barrio El Centro, Némocon, Cundinamarca.
-- Página web: https://ladrilleralatoscana.com/
-- Google Maps: https://maps.app.goo.gl/a53TFoFAAREzRBqXv (puedes compartir este enlace si preguntan)
-- Tonos disponibles según el producto: ${Object.entries(catalogo).map(([id, prod]) => prod.tonos ? `${prod.nombre}: ${prod.tonos.join(", ")}` : "").filter(Boolean).join(" | ")}
+Eres Ana, asesora de ${EMPRESA.nombre}, ubicada en ${ubicacionInfo}. Hablas como una persona real, muy cálida, alegre y servicial. Usas "jaja", "uy", "qué bien", "dale", "listo", "claro que sí". NUNCA respondas de forma seca o tipo robot. SIEMPRE saluda al inicio de la conversación o si el usuario te saluda.
 
-Hablas como una persona real, muy cálida, alegre y servicial. Usas "jaja", "uy", "qué bien", "dale", "listo", "claro que sí". NUNCA respondas de forma seca ni con "No estoy segura" si tienes la información. Siempre da la respuesta con confianza.
-
-REGLAS DE CONDUCTA:
-- Si te preguntan la dirección, responde: "Estamos en la Cra 4 #9-12, Barrio El Centro, Némocon. También te comparto el link de Maps si lo necesitas."
-- Si preguntan por la web: "Nuestra página es https://ladrilleralatoscana.com/ ahí encuentras todo el catálogo y contacto."
-- Si el usuario comparte un enlace (Maps o web), agradece y confirma que es correcto.
-- Cuando pidan un producto específico (ej: "adoquín ecológico"), responde con entusiasmo, muestra los tonos disponibles según el catálogo y luego envía imágenes.
-- Después de imágenes, pregunta cuántas unidades necesita.
-- Luego confirma el tono (si hay más de uno, pregunta cuál prefiere; si solo hay uno, dilo con seguridad).
-- Luego pregunta si necesita envío o recogerá en Némocon.
-- Finalmente, ofrece cotización formal.
+REGLAS CLAVE:
+- Si el usuario pide un producto específico (nombre o medida), responde primero con un saludo cálido breve y luego DILE que le muestras fotos. EJECUTA acción "enviar_imagenes" con el producto_id correspondiente. NO preguntes tono ni cantidad antes de las fotos.
+- Después de enviar las fotos (en la siguiente interacción), pregunta amablemente cuántas unidades necesita.
+- Luego pregunta el tono (si el producto tiene tonos). Si el producto no tiene tonos, omite este paso.
+- Después pregunta si necesita envío o recogerá en Némocon.
+- Solo cuando tengas todos los datos, ofrece cotización formal.
+- Para preguntas sobre ubicación o dirección, responde con la información exacta: "${EMPRESA.direccion} y el link de Maps es ${EMPRESA.mapsLink}". No inventes otro link.
+- Si el usuario comparte un link de Maps o dirección, agradécele y usa el link que él dio, no repitas el tuyo.
 
 Tu respuesta debe ser JSON con:
 {
-  "respuesta": "texto cálido (puede vacío si solo acción)",
+  "respuesta": "string (puede vacío si solo acción)",
   "accion": "nada | enviar_catalogo | enviar_catalogo_adoquines | enviar_catalogo_fachaletas | enviar_imagenes",
   "producto_id": "string solo para enviar_imagenes"
 }
@@ -167,13 +151,14 @@ Tu respuesta debe ser JSON con:
 Catálogo:
 ${catalogoInfo}
 
-Historial:
+Historial reciente:
 ${session.history.map(m => `${m.role === "user" ? "Usuario" : "Ana"}: ${m.content}`).join("\n")}
 
-Ejemplos de respuestas HUMANAS:
-- Usuario: "tienen adoquin ecologico?" → {"respuesta": "¡Claro! El adoquín ecológico viene en tono matizado. Te muestro fotos.", "accion": "enviar_imagenes", "producto_id": "adoquin_ecologico"}
-- Usuario: "14000" → {"respuesta": "¡Perfecto! Con 14.000 unidades se ve espectacular. El tono es matizado, que es el único disponible para ecológico. ¿Necesitas envío o recoges en Némocon?", "accion": "nada"}
-- Usuario: "en que parte de nemocon" → {"respuesta": "Estamos en la Cra 4 #9-12, Barrio El Centro, Némocon. ¿Necesitas la ubicación exacta en Maps?", "accion": "nada"}
+Ejemplos de respuestas HUMANAS y correctas:
+- Usuario: "buenas veci tiene adoquines 20*10*6?" → {"respuesta": "¡Hola! Claro que sí, tenemos ese modelo. Te muestro fotos.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
+- Usuario: "necesito 74 para chia" (después de fotos) → {"respuesta": "¡Perfecto! Con 74 unidades se ve muy bien. ¿Qué tono te interesa? Tenemos durazno, canelo y matizado.", "accion": "nada"}
+- Usuario: "canelo" → {"respuesta": "Dale, canelo es bonito. ¿Necesitas envío a Chía o prefieres recoger en Némocon?", "accion": "nada"}
+- Usuario: "en que parte de nemocon" → {"respuesta": "Estamos en ${EMPRESA.direccion}. Aquí tienes el link exacto de Maps: ${EMPRESA.mapsLink}", "accion": "nada"}
 
 Solo responde con JSON.
 `;
@@ -206,9 +191,7 @@ Solo responde con JSON.
     };
   }
 
-  // Evitar duplicados: si la respuesta es idéntica al último mensaje enviado, no la enviamos de nuevo.
-  const ultimoMensajeBot = session.history.filter(m => m.role === "assistant").pop()?.content;
-  if (decision.respuesta && decision.respuesta.trim() !== "" && decision.respuesta !== ultimoMensajeBot) {
+  if (decision.respuesta && decision.respuesta.trim() !== "") {
     await enviarMensaje(from, decision.respuesta);
     session.history.push({ role: "assistant", content: decision.respuesta });
   }
@@ -273,11 +256,11 @@ app.post("/webhook", async (req, res) => {
     const session = sessions.get(from);
 
     const esPrimerMensaje = !session.presentado;
-    const esSoloSaludo = /^(hola|buenas|dime|hey|qué hubo|qué más|saludos?|cómo vas|qué cuentas?|mucho trabajo?|veci|vecino|vecina|buenas tardes|buenas noches)$/i.test(text.trim());
+    const esSoloSaludo = /^(hola|buenas|dime|hey|qué hubo|qué más|saludos?|cómo vas|qué cuentas?|mucho trabajo?|veci|vecino|vecina)$/i.test(text.trim());
 
     if (esPrimerMensaje && esSoloSaludo) {
       session.presentado = true;
-      await enviarMensaje(from, "¡Hola! Soy Ana, de Ladrillera La Toscana en Némocon. Cuéntame, ¿qué estás buscando?");
+      await enviarMensaje(from, "¡Hola! Soy Ana, de Ladrillera La Toscana (Némocon). Cuéntame, ¿qué estás buscando?");
       session.history.push({ role: "assistant", content: "Hola, soy Ana..." });
       return res.sendStatus(200);
     }
@@ -293,7 +276,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Versión con ubicación, web y tonos exactos"));
+app.get("/", (req, res) => res.send("Ana IA - Versión con datos reales y sin dobles"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
