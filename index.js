@@ -27,6 +27,20 @@ function normalizarTexto(texto) {
 }
 
 // ==============================
+// 🧠 DETECTAR SALUDO
+// ==============================
+function esSaludo(texto) {
+  return ["hola", "buenas", "hey", "hol", "ola"].includes(texto);
+}
+
+// ==============================
+// 🧠 DETECTAR ENVÍO
+// ==============================
+function preguntaEnvio(texto) {
+  return texto.includes("envio") || texto.includes("envían") || texto.includes("envian");
+}
+
+// ==============================
 // 🧠 DETECTAR PRODUCTO
 // ==============================
 function detectarProducto(texto) {
@@ -167,14 +181,60 @@ app.post("/webhook", async (req, res) => {
     if (!sessions.has(from)) {
       sessions.set(from, {
         producto: null,
-        esperando: null
+        esperando: null,
+        saludo: false,
+        iniciado: false
       });
     }
 
     const session = sessions.get(from);
 
+    // ==============================
+    // 👋 SALUDO INTELIGENTE (SOLO UNA VEZ)
+    // ==============================
+    if (esSaludo(text) && !session.saludo) {
+      session.saludo = true;
+      await enviarMensaje(from, "hola 👍 en qué te ayudo?");
+      return res.sendStatus(200);
+    }
+
+    // ==============================
+    // 🚚 PREGUNTA DE ENVÍOS
+    // ==============================
+    if (preguntaEnvio(text)) {
+      await enviarMensaje(
+        from,
+        "sí 👍 manejamos envíos\n\npara darte el costo exacto necesito la ubicación, en un momento te lo reviso"
+      );
+      return res.sendStatus(200);
+    }
+
+    // ==============================
+    // 🧠 DETECTAR PRODUCTO
+    // ==============================
     const productoDetectado = detectarProducto(text);
-    if (productoDetectado) session.producto = productoDetectado;
+    if (productoDetectado) {
+      session.producto = productoDetectado;
+    }
+
+    // ==============================
+    // 🚀 ENTRADA DIRECTA CON INTENCIÓN (PRIMERA VEZ)
+    // ==============================
+    if (productoDetectado && !session.iniciado) {
+      session.iniciado = true;
+
+      await enviarMensaje(from, "perfecto 👍 ya te muestro lo que tenemos");
+
+      if (productoDetectado === "GENERAL_ADOQUINES") {
+        await mostrarCatalogo(from);
+        session.esperando = "elegir_producto";
+      } else {
+        await enviarImagenes(from, productoDetectado);
+        session.esperando = null;
+      }
+
+      return res.sendStatus(200);
+    }
 
     const esSi = ["si", "sí", "dale", "ok", "listo", "de una"].includes(text);
 
@@ -201,7 +261,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     // ==============================
-    // 🔥 SI YA ELIGIÓ PRODUCTO → MOSTRAR DIRECTO
+    // 🔥 SI YA ELIGIÓ PRODUCTO Y NO ES GENERAL → MOSTRAR DIRECTO
     // ==============================
     if (session.producto && session.producto !== "GENERAL_ADOQUINES") {
       await enviarImagenes(from, session.producto);
@@ -210,7 +270,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     // ==============================
-    // 👀 SI DICE "SI"
+    // 👀 SI DICE "SI" Y ESTÁ ESPERANDO CATÁLOGO
     // ==============================
     if (esSi && session.esperando === "mostrar_catalogo") {
       await mostrarCatalogo(from);
@@ -219,16 +279,16 @@ app.post("/webhook", async (req, res) => {
     }
 
     // ==============================
-    // 🧱 ADOQUINES GENERAL
+    // 🧱 ADOQUINES GENERAL (SOLO SI NO SE HA INICIADO O VIENE DE OTRO FLUJO)
     // ==============================
-    if (session.producto === "GENERAL_ADOQUINES") {
+    if (session.producto === "GENERAL_ADOQUINES" && !session.iniciado) {
       await enviarMensaje(from, "manejamos varios 👍 quieres que te muestre todos?");
       session.esperando = "mostrar_catalogo";
       return res.sendStatus(200);
     }
 
     // ==============================
-    // 🤖 IA (solo fallback)
+    // 🤖 IA (FALLBACK MEJORADA)
     // ==============================
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
@@ -240,15 +300,21 @@ app.post("/webhook", async (req, res) => {
             content: `
 Eres Ana de Ladrillera La Toscana.
 
-Hablas como persona real:
+Hablas como persona real, experta.
 
-- natural
-- amable
-- corta
-- no robot
-- ayudas fácil
-- no repites
-- si no entiendes: "qué pena no te entendí bien"
+Reglas:
+- nada de "¿cómo estás?"
+- directa al punto
+- natural (ej: "dale", "perfecto", "ya te reviso")
+- generas confianza
+- no repites preguntas
+- ayudas a comprar sin presionar
+- respuestas cortas
+
+Ejemplos:
+"perfecto 👍 ya te muestro"
+"ese es muy usado"
+"ya te reviso eso"
 `
           },
           { role: "user", content: text }
