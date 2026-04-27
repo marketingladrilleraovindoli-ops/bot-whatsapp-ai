@@ -49,22 +49,31 @@ async function enviarMensaje(to, body) {
 async function enviarImagenes(to, productoId) {
   const item = catalogo[productoId];
   if (!item || !item.imagenes || item.imagenes.length === 0) {
-    await enviarMensaje(to, "Aún no tengo fotos de ese producto.");
+    await enviarMensaje(to, "Ay, aún no tengo fotos de eso 😅. Pero te puedo mostrar otras opciones.");
     return;
   }
 
-  await enviarMensaje(to, `Aquí tienes ${item.nombre}:`);
+  // Frases naturales al enviar fotos (variadas)
+  const frasesEnvio = [
+    `Ahí te mando las fotos de ${item.nombre}:`,
+    `Mirá, así se ve ${item.nombre}:`,
+    `Toma, ${item.nombre}:`,
+    `Justo ahora te muestro ${item.nombre}:`
+  ];
+  const frase = frasesEnvio[Math.floor(Math.random() * frasesEnvio.length)];
+  await enviarMensaje(to, frase);
 
+  // Recomendación humana (opcional, a veces va aparte, a veces no)
   let recomendacion = "";
   if (productoId.includes("adoquin")) {
-    if (productoId.includes("20x10x3")) recomendacion = "Este es ideal para zonas peatonales o andenes.";
-    else if (productoId.includes("20x10x4")) recomendacion = "Muy usado para entradas de vehículos livianos.";
-    else if (productoId.includes("20x10x6")) recomendacion = "Perfecto para calles residenciales y parqueaderos.";
-    else if (productoId.includes("20x10x8")) recomendacion = "Para tráfico pesado o zonas industriales.";
-    else if (productoId.includes("ecologico")) recomendacion = "Opción ecológica, filtra agua y es muy resistente.";
-    else recomendacion = "Excelente durabilidad para diferentes proyectos.";
+    if (productoId.includes("20x10x3")) recomendacion = "Este es ideales para andenes o zonas peatonales.";
+    else if (productoId.includes("20x10x4")) recomendacion = "Muy usado para entradas de carros livianos, aguanta bien.";
+    else if (productoId.includes("20x10x6")) recomendacion = "Perfecto para calles residenciales o parqueaderos, es el más pedido.";
+    else if (productoId.includes("20x10x8")) recomendacion = "Ese es pa' tráfico pesado o zonas industriales, re resistente.";
+    else if (productoId.includes("ecologico")) recomendacion = "El ecológico filtra agua y es bien resistente, buena opción.";
+    else recomendacion = "Ese tiene buena durabilidad, te va a servir.";
   } else if (productoId.includes("fachaleta")) {
-    recomendacion = "Ideal para fachadas decorativas, da un aspecto rústico y elegante.";
+    recomendacion = "Quedan muy bonitas en fachadas, dan un toque rústico y elegante.";
   }
 
   if (recomendacion) {
@@ -87,7 +96,7 @@ async function enviarImagenes(to, productoId) {
 }
 
 async function mostrarCatalogo(to, categoria = null) {
-  let mensaje = "Mira, manejamos:\n\n";
+  let mensaje = "Mirá, esto es lo que manejamos:\n\n";
   let count = 0;
   for (const key in catalogo) {
     if (categoria === "adoquines" && !key.includes("adoquin")) continue;
@@ -98,12 +107,20 @@ async function mostrarCatalogo(to, categoria = null) {
   if (count === 0) {
     mensaje = "No encontré productos de esa categoría. ¿Quieres ver todo el catálogo?";
   } else {
-    mensaje += "\nSi quieres fotos de alguno, dime el nombre.";
+    mensaje += "\nDime cuál querés ver y te mando las fotos.";
   }
   await enviarMensaje(to, mensaje);
 }
 
 async function procesarConIA(textoUsuario, from, session) {
+  // Primera interacción: presentación natural
+  if (!session.presentado) {
+    session.presentado = true;
+    await enviarMensaje(from, "Hola, soy Ana, de Ladrillera La Toscana. ¿En qué te ayudo?");
+    // No procesamos el mensaje actual como IA, solo lo guardamos como historial para contexto
+    session.history.push({ role: "assistant", content: "Hola, soy Ana, de Ladrillera La Toscana. ¿En qué te ayudo?" });
+  }
+
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 10) session.history = session.history.slice(-10);
 
@@ -112,30 +129,32 @@ async function procesarConIA(textoUsuario, from, session) {
     .join("\n");
 
   const systemPrompt = `
-Eres Ana, asesora experta de Ladrillera La Toscana. Hablas como una persona real, cercana, natural. No usas emojis. No dices "¿cómo estás?". Tu tono es confiable y útil, como una amiga que sabe de construcción.
+Eres Ana, asesora de Ladrillera La Toscana. Hablas como una persona REAL, colombiana (pero no marcada). Usas lenguaje natural, cotidiano, cercano.
 
-Reglas de comportamiento:
-- Saludos: usa frases variadas como "hola, ¿qué necesitas?", "dime", "buenas, ¿en qué te ayudo?", evita el robótico "¿En qué puedo ayudarte hoy?".
-- Cuando muestras un producto, añade un comentario sobre su uso ideal (ej: "Este es perfecto para andenes").
-- Si preguntan por "fachaleta arquitectónica" entiende que se refiere a fachaletas en general. No digas que no manejas, muestra el catálogo de fachaletas.
-- Si preguntan por un producto específico (nombre o medida), envía imágenes directamente y una recomendación.
-- Si solo dicen "adoquines" sin medida, muestra catálogo de adoquines.
-- Si solo dicen "fachaletas" o "fachadas", muestra catálogo de fachaletas.
-- Sé breve pero cálida. Genera confianza.
+REGLAS DE PERSONALIDAD (obligatorias):
+- Usa contracciones: "pa'", "pal", "mira", "dale", "listo", "ah", "bueno", "claro", "cómo vas", "sabes qué".
+- Evita estructuras repetitivas como "Te envío las fotos de..." → mejor "Ahí te mando...", "Mirá...", "Toma...".
+- Las recomendaciones deben ir en la misma frase o en un mensaje aparte pero muy corto.
+- Saluda variado: "Hola", "Buenas", "Dime", "¿Qué tal?".
+- Si te preguntan por algo que no tienes, ofrece alternativas de forma amable (no digas "lo siento no manejamos").
+- Cuando muestres fotos, añade algo como "Ahí te las mando...", "Son estas...".
+- No uses nunca: "¿En qué puedo ayudarte hoy?" (suena a bot).
+- Sé breve pero cálida. Si el usuario solo saluda, responde "Hola, ¿qué necesitas?".
+- Aprovecha el historial para no repetir preguntas.
 
 Tu respuesta debe ser un JSON con: "respuesta" (texto para el usuario), "accion" (puede ser "nada", "enviar_catalogo", "enviar_catalogo_adoquines", "enviar_catalogo_fachaletas", o "enviar_imagenes"), "producto_id" (solo para enviar_imagenes, debe coincidir con id del catálogo).
 
 Catálogo:
 ${catalogoInfo}
 
-Historial:
+Historial reciente:
 ${session.history.map(m => `${m.role === "user" ? "Usuario" : "Ana"}: ${m.content}`).join("\n")}
 
-Ejemplos:
-- Usuario: "hola" → {"respuesta": "hola, ¿qué necesitas?", "accion": "nada"}
-- Usuario: "adoquines 20x10x6" → {"respuesta": "Te envío las fotos del adoquín 20x10x6. Es perfecto para calles residenciales.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
-- Usuario: "fachaleta arquitectonica" → {"respuesta": "Claro, te muestro las fachaletas que manejamos.", "accion": "enviar_catalogo_fachaletas"}
-- Usuario: "y fachaletas?" → {"respuesta": "Por supuesto, aquí tienes nuestras fachaletas.", "accion": "enviar_catalogo_fachaletas"}
+Ejemplos (respira naturalidad):
+- Usuario: "hola" → {"respuesta": "Hola, dime qué necesitas.", "accion": "nada"}
+- Usuario: "adoquines 20x10x6" → {"respuesta": "Ahí te mando las fotos del adoquín 20x10x6, es perfecto para calles residenciales.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
+- Usuario: "fachaleta arquitectonica" → {"respuesta": "Claro, mira las fachaletas que tenemos.", "accion": "enviar_catalogo_fachaletas"}
+- Usuario: "y precios?" → {"respuesta": "Déjame revisar los precios y te confirmo en un momento. ¿Cuántos metros cuadrados necesitas?", "accion": "nada"}
 
 Solo responde con JSON.
 `;
@@ -148,11 +167,11 @@ Solo responde con JSON.
         { role: "system", content: systemPrompt },
         { role: "user", content: textoUsuario }
       ],
-      temperature: 0.3,
+      temperature: 0.4,
       response_format: { type: "json_object" }
     },
     {
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }  // ✅ CORREGIDO
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
     }
   );
 
@@ -163,7 +182,7 @@ Solo responde con JSON.
   } catch (e) {
     console.error("Error parsing JSON:", contenido);
     decision = {
-      respuesta: "Lo siento, no entendí bien. ¿Puedes repetirlo?",
+      respuesta: "Uy, no te entendí bien, ¿puedes repetirlo?",
       accion: "nada"
     };
   }
@@ -186,7 +205,7 @@ Solo responde con JSON.
       if (decision.producto_id && catalogo[decision.producto_id]) {
         await enviarImagenes(from, decision.producto_id);
       } else {
-        await enviarMensaje(from, "No encontré ese producto. ¿Puedes especificar mejor?");
+        await enviarMensaje(from, "Ese producto no lo tengo en mi lista. ¿Quieres ver el catálogo?");
       }
       break;
   }
@@ -194,6 +213,7 @@ Solo responde con JSON.
   logConversacion(from, textoUsuario, decision.respuesta, decision.accion);
 }
 
+// Webhooks
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -224,7 +244,7 @@ app.post("/webhook", async (req, res) => {
     console.log("Mensaje:", text);
 
     if (!sessions.has(from)) {
-      sessions.set(from, { history: [] });
+      sessions.set(from, { history: [], presentado: false });
     }
     const session = sessions.get(from);
 
