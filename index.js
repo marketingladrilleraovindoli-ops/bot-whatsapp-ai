@@ -90,10 +90,15 @@ async function mostrarCatalogo(to, categoria = null) {
   await enviarMensaje(to, mensaje);
 }
 
-// Función para detectar cantidades en el mensaje
+// Detección robusta de cantidades (soporta 10.000, 100,000, 1000, etc.)
 function detectarCantidad(texto) {
-  const match = texto.match(/\b(\d+)\s*(?:cientos|mil|unidades|adoquines|piezas)?\b/i);
-  if (match) return parseInt(match[1]);
+  // Busca números con puntos o comas (ej: 10.000, 100,000) y también números simples
+  const match = texto.match(/(\d{1,3}(?:[.,]\d{3})*(?:\.\d+)?)/);
+  if (match) {
+    let numStr = match[1].replace(/\./g, '').replace(',', '');
+    const numero = parseInt(numStr, 10);
+    if (!isNaN(numero) && numero > 0) return numero;
+  }
   return null;
 }
 
@@ -101,10 +106,16 @@ async function procesarConIA(textoUsuario, from, session) {
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
-  // Detectar cantidad para usarla después
-  const cantidadDetectada = detectarCantidad(textoUsuario);
-  if (cantidadDetectada) {
-    session.ultimaCantidad = cantidadDetectada;
+  // Detectar cantidad actualizada
+  const nuevaCantidad = detectarCantidad(textoUsuario);
+  if (nuevaCantidad !== null) {
+    session.ultimaCantidad = nuevaCantidad;
+    session.cantidadConfirmada = false;
+  }
+
+  // Si el usuario está corrigiendo la cantidad (ej: "10.000 solo es esa cantidad") marcar para no preguntar de nuevo
+  if (/solo es esa cantidad|corregir|no es|habia dicho/i.test(textoUsuario) && session.ultimaCantidad) {
+    session.cantidadConfirmada = true;
   }
 
   const catalogoInfo = Object.entries(catalogo)
@@ -112,21 +123,22 @@ async function procesarConIA(textoUsuario, from, session) {
     .join("\n");
 
   const systemPrompt = `
-Eres Ana, asesora experta y amable de Ladrillera La Toscana. Hablas como una persona real, cálida, colombiana neutra. Usas "jaja", "uy", "qué bien", "dale", "listo". Nunca eres seca ni robótica.
+Eres Ana, asesora de Ladrillera La Toscana. Somos una empresa colombiana ubicada en Némocon (Cundinamarca). NO inventes ubicaciones. Si no sabes algo, di que consultes nuestra página web o que te comunico con un asesor.
+
+Hablas de forma muy humana, cálida, usas "jaja", "uy", "dale", "listo", "qué bien". Nunca eres seca ni robótica.
 
 REGLAS OBLIGATORIAS:
-- Siempre responde preguntas personales (ej: "mucho trabajo?", "cómo vas?") con calidez y luego redirige suavemente a los productos.
-- Si el usuario pide UN PRODUCTO ESPECÍFICO (ej: "adoquín 20x10x6", "quiero ver ese de 20x10x3"), tu acción debe ser "enviar_imagenes" con el producto_id correspondiente. No preguntes "¿Te gustaría saber más?" ni nada. Directo: una frase breve + acción.
-- Si el usuario dice "solo el que te pedí" o "solo ese", también debes enviar imágenes de inmediato.
-- Si el usuario pregunta "cuáles tienes?" o "qué modelos tienes?" y ya hay contexto de adoquines, envía catálogo de adoquines con respuesta vacía ("").
-- Si después de enviar imágenes el usuario no ha dicho cantidad, pregúntale cuántas unidades o metros cuadrados necesita para darle un presupuesto.
-- Si el usuario ya mencionó una cantidad (ej: "1000 adoquines"), después de mostrar imágenes pregúntale si quiere una cotización formal.
-- Nunca repitas la lista de productos si ya la enviaste antes en la conversación.
-- Tus respuestas deben ser cortas (máx 25 palabras) y muy naturales.
+- Si el usuario pregunta "cuáles tienes?" o "qué modelos?" y ya mencionó adoquines antes → acción "enviar_catalogo_adoquines" con respuesta vacía (""). No hagas preguntas adicionales.
+- Si pregunta por ubicación o de dónde somos → responde "Somos de Némocon, Cundinamarca." No digas Toscana.
+- Si pide un producto específico (ej: "20*10*6") → envía imágenes de inmediato con una frase breve.
+- Después de enviar imágenes, SIEMPRE pregunta cuántas unidades necesita (a menos que ya haya dado una cantidad válida en la conversación).
+- Cuando el usuario da una cantidad (ej: "100,000" o "10.000"), guarda esa cantidad y ofrece cotización formal. No confundas 10.000 con 10.
+- Si el usuario corrige la cantidad (ej: "10.000 solo es esa cantidad" o "era 10.000"), actualiza la cantidad y ofrece cotización por la nueva cantidad.
+- Tus respuestas deben ser muy cortas (máx 20 palabras).
 
 Tu respuesta debe ser JSON:
 {
-  "respuesta": "texto para el usuario (puede ser vacío si solo quieres acción)",
+  "respuesta": "texto para el usuario (puede ser vacío)",
   "accion": "nada" | "enviar_catalogo" | "enviar_catalogo_adoquines" | "enviar_catalogo_fachaletas" | "enviar_imagenes",
   "producto_id": "string solo si accion es enviar_imagenes"
 }
@@ -138,11 +150,11 @@ Historial reciente:
 ${session.history.map(m => `${m.role === "user" ? "Usuario" : "Ana"}: ${m.content}`).join("\n")}
 
 Ejemplos:
-- Usuario: "hola tu como va todo mucho trabajo?" → {"respuesta": "Uf, sí, pero bien. ¿Y tú? ¿Qué andas buscando?", "accion": "nada"}
-- Usuario: "bien gracias aqui a molestarte con adoquines 20x10x6" → {"respuesta": "Jaja no molestas. Te muestro fotos de ese modelo.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
-- Usuario: "solo el que te pedi" (después de haber pedido un producto) → {"respuesta": "Ahí te van las fotos.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
-- Usuario: "cuales tienes?" (con contexto de adoquines) → {"respuesta": "", "accion": "enviar_catalogo_adoquines"}
-- Usuario: "quiero ver ese de 20*10*3" → {"respuesta": "Dale, te comparto fotos del 20x10x3.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x3"}
+- Usuario: "buenas veci como va tiene adoquines?" → {"respuesta": "Todo bien. Claro, tenemos. ¿Qué modelo te interesa?", "accion": "nada"}
+- Usuario: "cuales tienes?" (contexto adoquines) → {"respuesta": "", "accion": "enviar_catalogo_adoquines"}
+- Usuario: "de donde son?" → {"respuesta": "Somos de Némocon, Cundinamarca.", "accion": "nada"}
+- Usuario: "20*10*6" → {"respuesta": "Ahí te van las fotos.", "accion": "enviar_imagenes", "producto_id": "adoquin_20x10x6"}
+- Usuario: "10,000" (después de ver fotos) → {"respuesta": "Dale, te preparo cotización para 10,000 unidades.", "accion": "nada"}
 
 Solo responde con JSON.
 `;
@@ -155,7 +167,7 @@ Solo responde con JSON.
         { role: "system", content: systemPrompt },
         { role: "user", content: textoUsuario }
       ],
-      temperature: 0.6,
+      temperature: 0.5,
       response_format: { type: "json_object" }
     },
     {
@@ -181,30 +193,31 @@ Solo responde con JSON.
   }
 
   // Ejecutar acción
-  let accionRealizada = false;
   if (decision.accion === "enviar_catalogo") {
     await mostrarCatalogo(from);
-    accionRealizada = true;
   } else if (decision.accion === "enviar_catalogo_adoquines") {
     await mostrarCatalogo(from, "adoquines");
-    accionRealizada = true;
   } else if (decision.accion === "enviar_catalogo_fachaletas") {
     await mostrarCatalogo(from, "fachaletas");
-    accionRealizada = true;
   } else if (decision.accion === "enviar_imagenes" && decision.producto_id && catalogo[decision.producto_id]) {
     await enviarImagenes(from, decision.producto_id);
-    accionRealizada = true;
-    // Después de enviar imágenes, si el usuario ya mencionó cantidad, preguntar por cotización
-    if (session.ultimaCantidad) {
-      await enviarMensaje(from, `Con ${session.ultimaCantidad} unidades te puedo ayudar a cotizar. ¿Quieres que te prepare un presupuesto?`);
+    // Después de imágenes, preguntar cantidad si no se ha confirmado una
+    if (!session.ultimaCantidad || !session.cantidadConfirmada) {
+      await enviarMensaje(from, "¿Cuántas unidades necesitas? Así te ayudo con el precio.");
+      session.history.push({ role: "assistant", content: "¿Cuántas unidades necesitas?" });
+    } else if (session.ultimaCantidad && !session.cotizacionOfrecida) {
+      await enviarMensaje(from, `Con ${session.ultimaCantidad} unidades puedo ayudarte a cotizar. ¿Quieres que te prepare un presupuesto?`);
+      session.cotizacionOfrecida = true;
       session.history.push({ role: "assistant", content: `Con ${session.ultimaCantidad} unidades...` });
-    } else if (!session.preguntadoCantidad) {
-      session.preguntadoCantidad = true;
-      await enviarMensaje(from, "¿Cuántas unidades o metros cuadrados necesitas? Así te ayudo con el precio.");
-      session.history.push({ role: "assistant", content: "¿Cuántas unidades o metros cuadrados necesitas?" });
     }
   } else if (decision.accion === "enviar_imagenes" && (!decision.producto_id || !catalogo[decision.producto_id])) {
     await enviarMensaje(from, "No tengo ese producto. ¿Quieres ver el catálogo?");
+  }
+
+  // Si el usuario dio una nueva cantidad y no se ha ofrecido cotización aún
+  if (session.ultimaCantidad && !session.cotizacionOfrecida && !decision.accion.includes("enviar_imagenes")) {
+    await enviarMensaje(from, `¿Quieres una cotización formal para los ${session.ultimaCantidad} adoquines?`);
+    session.cotizacionOfrecida = true;
   }
 
   logConversacion(from, textoUsuario, decision.respuesta || "[sin texto]", decision.accion);
@@ -243,24 +256,28 @@ app.post("/webhook", async (req, res) => {
     console.log("Mensaje:", text);
 
     if (!sessions.has(from)) {
-      sessions.set(from, { history: [], presentado: false, ultimaCantidad: null, preguntadoCantidad: false });
+      sessions.set(from, {
+        history: [],
+        presentado: false,
+        ultimaCantidad: null,
+        cantidadConfirmada: false,
+        cotizacionOfrecida: false
+      });
     }
     const session = sessions.get(from);
 
-    // Primer saludo sin pedir producto: solo presentación y fin
+    // Primer saludo simple
     const esPrimerMensaje = !session.presentado;
-    const esSoloSaludo = /^(hola|buenas|dime|hey|qué hubo|qué más|saludos?|cómo vas|qué cuentas?|mucho trabajo?)$/i.test(text.trim());
+    const esSoloSaludo = /^(hola|buenas|dime|hey|qué hubo|qué más|saludos?|cómo vas|qué cuentas?|mucho trabajo?|veci)$/i.test(text.trim());
 
     if (esPrimerMensaje && esSoloSaludo) {
       session.presentado = true;
-      await enviarMensaje(from, "Hola, soy Ana, de Ladrillera La Toscana. Cuéntame, ¿qué estás buscando?");
+      await enviarMensaje(from, "Hola, soy Ana, de Ladrillera La Toscana (Némocon). Cuéntame, ¿qué estás buscando?");
       session.history.push({ role: "assistant", content: "Hola, soy Ana..." });
       return res.sendStatus(200);
     }
 
-    if (!session.presentado) {
-      session.presentado = true;
-    }
+    if (!session.presentado) session.presentado = true;
 
     await procesarConIA(text, from, session);
 
@@ -271,7 +288,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Cálida, sin dobles, con cotizaciones"));
+app.get("/", (req, res) => res.send("Ana IA - Versión profesional con manejo de cantidades"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
