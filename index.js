@@ -55,7 +55,6 @@ async function enviarImagenes(to, productoId) {
 
   await enviarMensaje(to, `Aquí tienes ${item.nombre}:`);
 
-  // Recomendación adicional según tipo de producto
   let recomendacion = "";
   if (productoId.includes("adoquin")) {
     if (productoId.includes("20x10x3")) recomendacion = "Este es ideal para zonas peatonales o andenes.";
@@ -153,7 +152,7 @@ Solo responde con JSON.
       response_format: { type: "json_object" }
     },
     {
-      headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}` }
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }  // ✅ CORREGIDO
     }
   );
 
@@ -171,10 +170,8 @@ Solo responde con JSON.
 
   session.history.push({ role: "assistant", content: decision.respuesta });
 
-  // Enviar respuesta
   await enviarMensaje(from, decision.respuesta);
 
-  // Ejecutar acción
   switch (decision.accion) {
     case "enviar_catalogo":
       await mostrarCatalogo(from);
@@ -197,7 +194,6 @@ Solo responde con JSON.
   logConversacion(from, textoUsuario, decision.respuesta, decision.accion);
 }
 
-// Webhooks
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
