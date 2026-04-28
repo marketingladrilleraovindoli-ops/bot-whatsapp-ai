@@ -351,7 +351,11 @@ async function procesarConIA(textoUsuario, from, session) {
     const cantidad = detectarCantidad(textoUsuario);
     if (cantidad !== null && cantidad > 0) {
       session.pedido.cantidad = cantidad;
-      await enviarMensaje(from, `Ok, ${cantidad} unidades. Ahora, ¿dónde te lo mandamos? (Puedes decir 'recoger' para pasar a la fábrica o darme una dirección para envío)`);
+      
+      // ✅ CAMBIO SOLICITADO: En lugar de la pregunta genérica, enviamos el mapa y preguntamos recogida o envío
+      await enviarMensaje(from, `Ok, ${cantidad} unidades. Nuestra fábrica está en Némocon, aquí te mando la ubicación:`);
+      await enviarMensaje(from, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
+      await enviarMensaje(from, "¿Prefieres recoger en la fábrica o que te lo enviemos?");
       return;
     } else {
       await enviarMensaje(from, "Dime cuántas unidades necesitas (ej: 500, 1000, 10.000).");
@@ -437,7 +441,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Versión con detección natural de envío/recogida"));
+app.get("/", (req, res) => res.send("Ana IA - Versión con mapa mostrado automáticamente después de la cantidad"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
