@@ -18,7 +18,7 @@ const defaultPedido = {
   productoId: null,
   productoNombre: null,
   tonalidad: null,
-  cantidad: null,      // ¡Nunca asignar un valor por defecto!
+  cantidad: null,      // NUNCA asignar un valor por defecto (null = no definida)
   ubicacion: null,
   tonosDisponibles: []
 };
@@ -67,7 +67,7 @@ async function enviarImagenes(to, productoId) {
   return true;
 }
 
-// Función unificada que pregunta el siguiente dato faltante (solo uno)
+// Pregunta el siguiente dato faltante (color -> cantidad -> ubicación)
 async function preguntarSiguienteDato(to, session) {
   if (!session.pedido.productoNombre) {
     await mostrarCatalogoHumano(to);
@@ -219,7 +219,7 @@ Eres Ana, asesora de ventas de Ladrillera La Toscana (Némocon, Colombia). Habla
 ${estadoPedido}
 
 REGLAS ESTRICTAS:
-- NUNCA asumas una cantidad ni una ubicación. Si el usuario no la ha dado, el campo estará vacío.
+- NUNCA asumas una cantidad ni una ubicación. Si el usuario no la ha dado, el campo estará vacío o null.
 - SIEMPRE sigue el orden: producto -> color -> cantidad -> ubicación.
 - Si el usuario da un producto (ej: "20x10x6") -> acción "enviar_imagenes".
 - Si da un color (ej: "durazno") -> acción "actualizar_tonalidad".
@@ -298,7 +298,7 @@ ${session.history.slice(-6).map(m => `${m.role === "user" ? "Cliente" : "Ana"}: 
       }
       break;
     case "actualizar_cantidad":
-      if (decision.cantidad_valor > 0) {
+      if (decision.cantidad_valor > 0 && session.pedido.cantidad !== decision.cantidad_valor) {
         session.pedido.cantidad = decision.cantidad_valor;
         await preguntarSiguienteDato(from, session);
       }
@@ -362,6 +362,31 @@ app.post("/webhook", async (req, res) => {
     }
     const session = sessions.get(from);
 
+    // ========== COMANDOS DE PRUEBA ==========
+    if (text === "#reset" || text === "*reset*" || text === "reset" || text === "reiniciar") {
+      session.pedido = JSON.parse(JSON.stringify(defaultPedido));
+      session.cotizacionOfrecida = false;
+      session.history = [];
+      session.presentado = false;
+      await enviarMensaje(from, "🔄 *Sesión reiniciada* completamente. Ya puedes empezar de cero.");
+      console.log(`🔄 Reset manual para ${from}`);
+      return res.sendStatus(200);
+    }
+
+    if (text === "#estado" || text === "estado") {
+      const estado = `
+📊 *ESTADO ACTUAL DE LA SESIÓN:*
+- Producto: ${session.pedido.productoNombre || "❌ ninguno"}
+- Color: ${session.pedido.tonalidad || "❌ ninguno"}
+- Cantidad: ${session.pedido.cantidad ?? "❌ ninguna"}
+- Ubicación: ${session.pedido.ubicacion || "❌ ninguna"}
+- Tonos disponibles: ${session.pedido.tonosDisponibles.join(", ") || "❌ ninguno"}
+`;
+      await enviarMensaje(from, estado);
+      return res.sendStatus(200);
+    }
+    // ========================================
+
     const esPrimerMensaje = !session.presentado;
     const esSaludo = /^(hola|buenos días|buenas tardes|buenas noches|qué hubo|qué más|saludos|hey|epa|veci)$/i.test(text.trim());
 
@@ -383,7 +408,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Versión humana definitiva"));
+app.get("/", (req, res) => res.send("Ana IA - Versión humana definitiva con comandos de prueba"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
