@@ -14,12 +14,13 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 const sessions = new Map();
 const processedMessages = new Set();
 
+// Estado inicial del pedido - NINGÚN VALOR POR DEFECTO
 const defaultPedido = {
-  productoId: null,
-  productoNombre: null,
+  referencia: null,      // id del producto
+  nombreProducto: null,
   tonalidad: null,
-  cantidad: null,
-  ubicacion: null,
+  cantidad: null,        // IMPORTANTE: null = no preguntado aún
+  ubicacion: null,       // null = no definida, "recoger" o dirección
   tonosDisponibles: []
 };
 
@@ -67,61 +68,56 @@ async function enviarImagenes(to, productoId) {
   return true;
 }
 
-// Devuelve un argumento de venta según el producto
-function obtenerArgumentoVenta(productoId, productoNombre) {
-  if (productoId.includes("20x10x6")) {
-    return "Este adoquín es ideal para entradas de carros y zonas de alto tránsito, súper resistente. Además, su color dura mucho tiempo sin decolorarse.";
-  } else if (productoId.includes("ecologico")) {
-    return "Es ecológico, fabricado con materiales reciclados, muy amigable con el ambiente.";
-  } else if (productoId.includes("corbatin")) {
-    return "El diseño corbatín da un toque único y elegante a los pisos, muy buscado para proyectos decorativos.";
-  } else if (productoId.includes("cuarteron")) {
-    return "El cuarterón es muy versátil para andenes y jardines, fácil de instalar.";
-  } else if (productoId.includes("fachaleta")) {
-    return "Da un acabado tipo ladrillo visto sin necesidad de hacer obra pesada, muy económico y bonito.";
-  }
-  return "Son productos de alta calidad, fabricados con arcilla de primera en Némocon.";
-}
+// ==================== NUEVA LÓGICA DE PREGUNTAS ====================
 
-// Pregunta el siguiente dato faltante (color → cantidad → ubicación), pero sin asumir cantidad
-async function preguntarSiguienteDato(to, session) {
-  if (!session.pedido.productoNombre) {
+async function preguntarProximoDato(to, session) {
+  // 1. Si no hay referencia, mostrar catálogo (pero solo si el usuario lo pide)
+  if (!session.pedido.referencia) {
+    // Esto no debería ocurrir porque la referencia se pide explícitamente
     await mostrarCatalogoHumano(to);
     return;
   }
+  // 2. Si hay referencia pero no tonalidad y el producto tiene tonos
   if (session.pedido.tonosDisponibles.length > 0 && !session.pedido.tonalidad) {
     await enviarMensaje(to, `¿De qué color lo quieres? Tenemos ${session.pedido.tonosDisponibles.join(", ")}.`);
     return;
   }
-  if (!session.pedido.cantidad) {
+  // 3. Si falta cantidad
+  if (session.pedido.cantidad === null) {
     await enviarMensaje(to, "¿Cuántas unidades necesitas? Así te ayudo con el precio.");
     return;
   }
+  // 4. Si falta ubicación
   if (!session.pedido.ubicacion) {
-    await enviarMensaje(to, "¿Dónde te lo mandamos? Si es en Némocon, puedes pasar a recoger. Dame la dirección completa.");
+    await enviarMensaje(to, "¿Dónde te lo mandamos? Si es en Némocon, puedes pasar a recoger. Dame la dirección completa o dime si pasas a recoger.");
     return;
   }
-  // Ya tiene todo: ofrecer cotización
-  const argumento = obtenerArgumentoVenta(session.pedido.productoId, session.pedido.productoNombre);
-  await enviarMensaje(to, `Listo, ya tengo tu pedido: ${session.pedido.productoNombre}, color ${session.pedido.tonalidad}, ${session.pedido.cantidad} unidades. ${argumento} ¿Quieres que te prepare una cotización formal?`);
+  // 5. Ya tenemos todos los datos: mostrar resumen y ofrecer cotización
+  await mostrarResumenYOferta(to, session);
+}
+
+async function mostrarResumenYOferta(to, session) {
+  const { nombreProducto, tonalidad, cantidad, ubicacion } = session.pedido;
+  let beneficios = "";
+  if (nombreProducto.includes("20x10x6")) {
+    beneficios = " Este adoquín es ideal para entradas de carros y zonas de alto tránsito, súper resistente. Además, su color dura mucho tiempo sin decolorarse.";
+  } else if (nombreProducto.includes("fachaleta")) {
+    beneficios = " Es perfecta para fachadas elegantes, fácil de instalar y con acabado premium.";
+  } else {
+    beneficios = " Es un producto de excelente calidad, fabricado con materiales seleccionados.";
+  }
+  const ubicacionTexto = ubicacion === "recoger" ? "lo recoges en la fábrica (Némocon)" : `envío a ${ubicacion}`;
+  await enviarMensaje(to, `Listo, tengo tu pedido: ${nombreProducto}, color ${tonalidad}, ${cantidad} unidades, ${ubicacionTexto}.${beneficios} ¿Quieres que te prepare una cotización formal?`);
   session.cotizacionOfrecida = true;
 }
 
-async function enviarImagenesYContinuar(to, productoId, session) {
-  const item = catalogo[productoId];
-  if (!item) {
-    await enviarMensaje(to, "Ese no lo conozco, ¿me dices el nombre exacto?");
-    return;
-  }
-  // Enviar imágenes
-  await enviarImagenes(to, productoId);
-  session.pedido.productoId = productoId;
-  session.pedido.productoNombre = item.nombre;
-  session.pedido.tonosDisponibles = item.tonos || [];
-  // Preguntar siguiente dato (color)
-  await preguntarSiguienteDato(to, session);
+// Función para detectar si el usuario pide la ubicación de la fábrica
+function esPreguntaUbicacionFabrica(texto) {
+  const lower = texto.toLowerCase();
+  return /dónde queda|en qué parte|ubicación de la fábrica|dirección de la planta|dónde lo puedo recoger|pasar a recoger|en que parte lo puedo recoger|dirección para recoger/i.test(lower);
 }
 
+// Mostrar catálogo solo cuando el usuario lo pida
 async function mostrarCatalogoHumano(to, categoria = null) {
   let productos = [];
   if (categoria === "adoquines") {
@@ -155,77 +151,106 @@ function detectarCantidad(texto) {
   return null;
 }
 
+// Detectar si el usuario dice que va a recoger (sin pedir dirección)
+function esRecoger(texto) {
+  const lower = texto.toLowerCase();
+  return /paso a recoger|voy a recoger|recojo|recogeré|lo recojo|yo lo recojo|pasaré a recoger/i.test(lower);
+}
+
 async function procesarConIA(textoUsuario, from, session) {
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
-  // Detectar cantidad SOLO si el usuario la da explícitamente
-  const nuevaCantidad = detectarCantidad(textoUsuario);
-  if (nuevaCantidad !== null) {
-    session.pedido.cantidad = nuevaCantidad;
-  }
-
-  // Detectar si el usuario quiere recoger en Némocon (para no pedir dirección de envío)
-  const textoLower = textoUsuario.toLowerCase();
-  const quiereRecoger = /recojo|recoger|pasar por|retirar|dónde queda|ubicación|maps|google maps/i.test(textoLower);
-  const mencionaNemocon = /némocon|nemocon/i.test(textoLower);
-  
-  if (quiereRecoger && mencionaNemocon && !session.pedido.ubicacion) {
-    session.pedido.ubicacion = "Recoge en Némocon (fábrica)";
-    await enviarMensaje(from, "Claro, la fábrica queda en Némocon. Aquí te mando la ubicación exacta:");
+  // 1. DETECCIÓN PRIORITARIA: Si pregunta por la ubicación de la fábrica, responder y salir (sin continuar flujo)
+  if (esPreguntaUbicacionFabrica(textoUsuario)) {
+    await enviarMensaje(from, "Claro, la fábrica queda en Némocon. Aquí te mando la ubicación exacta para que pases a recoger:");
     await enviarMensaje(from, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
-    // No preguntar más ubicación, pasar al siguiente dato faltante si hay
-    if (!session.pedido.cantidad) {
-      await enviarMensaje(from, "¿Cuántas unidades necesitas?");
-      return;
+    // Si el usuario aún no tiene definida la ubicación, la marcamos como "recoger" para no preguntar después
+    if (!session.pedido.ubicacion && session.pedido.referencia && session.pedido.tonalidad && session.pedido.cantidad !== null) {
+      session.pedido.ubicacion = "recoger";
+      await preguntarProximoDato(from, session); // Esto mostrará resumen si todo está completo
     }
-    // Si ya tiene cantidad, ofrecer cotización
-    const argumento = obtenerArgumentoVenta(session.pedido.productoId, session.pedido.productoNombre);
-    await enviarMensaje(from, `Listo, entonces tu pedido: ${session.pedido.productoNombre}, color ${session.pedido.tonalidad || "definir"}, ${session.pedido.cantidad} unidades, lo recoges en la fábrica. ${argumento} ¿Quieres la cotización?`);
-    session.cotizacionOfrecida = true;
     return;
   }
 
+  // 2. Detectar si dice que va a recoger (sin preguntar dirección)
+  if (esRecoger(textoUsuario) && !session.pedido.ubicacion) {
+    session.pedido.ubicacion = "recoger";
+    await enviarMensaje(from, "Perfecto, entonces pasas a recoger a la fábrica. ¿Necesitas la ubicación?");
+    await preguntarProximoDato(from, session);
+    return;
+  }
+
+  // 3. Detectar cantidad explícita (SOLO si el usuario escribe un número)
+  const cantidadDetectada = detectarCantidad(textoUsuario);
+  if (cantidadDetectada !== null && session.pedido.cantidad === null) {
+    session.pedido.cantidad = cantidadDetectada;
+    await enviarMensaje(from, `Ok, ${cantidadDetectada} unidades.`);
+    await preguntarProximoDato(from, session);
+    return;
+  }
+
+  // 4. Si la cantidad ya está definida y el usuario da una nueva, actualizamos
+  if (cantidadDetectada !== null && session.pedido.cantidad !== null && session.pedido.cantidad !== cantidadDetectada) {
+    session.pedido.cantidad = cantidadDetectada;
+    await enviarMensaje(from, `Actualizado: ${cantidadDetectada} unidades.`);
+    await preguntarProximoDato(from, session);
+    return;
+  }
+
+  // 5. Detectar ubicación (dirección o ciudad) - solo si no es recoger y no está definida
+  const lower = textoUsuario.toLowerCase();
+  // Evitar que palabras como "recoger" activen dirección
+  if (!esRecoger(textoUsuario) && !session.pedido.ubicacion && !esPreguntaUbicacionFabrica(textoUsuario)) {
+    // Si parece una dirección (tiene calle, carrera, número o ciudad)
+    if (lower.match(/(calle|cra|carrera|diagonal|transversal|#|no\.|número|chía|bogotá|soacha|zipaquirá|tocancipá|némocon)/i)) {
+      session.pedido.ubicacion = textoUsuario; // guardamos lo que escribió
+      await enviarMensaje(from, `Dirección guardada: ${textoUsuario}`);
+      await preguntarProximoDato(from, session);
+      return;
+    }
+  }
+
+  // 6. Si no hay referencia, usar IA para entender qué producto quiere o mostrar catálogo
+  // Pero aquí usaremos la IA para interpretar comandos del usuario.
+  
+  // Estado actual para la IA
   const estadoPedido = `
 DATOS ACTUALES:
-- Producto: ${session.pedido.productoNombre || "ninguno"}
-- Color: ${session.pedido.tonalidad || "ninguno"}
-- Cantidad: ${session.pedido.cantidad || "ninguna"}
-- Ubicación: ${session.pedido.ubicacion || "ninguna"}
+- Referencia: ${session.pedido.nombreProducto || "ninguna"}
+- Tonalidad: ${session.pedido.tonalidad || "ninguna"}
+- Cantidad: ${session.pedido.cantidad === null ? "ninguna" : session.pedido.cantidad}
+- Ubicación: ${session.pedido.ubicacion === "recoger" ? "recoger en fábrica" : (session.pedido.ubicacion || "ninguna")}
 
 FALTAN (en orden):
-${!session.pedido.productoNombre ? "- producto" : ""}
+${!session.pedido.referencia ? "- producto" : ""}
 ${(!session.pedido.tonalidad && session.pedido.tonosDisponibles.length > 0) ? "- color (" + session.pedido.tonosDisponibles.join(", ") + ")" : ""}
-${!session.pedido.cantidad ? "- cantidad" : ""}
-${!session.pedido.ubicacion ? "- dirección de envío (si no es recogida)" : ""}
+${session.pedido.cantidad === null ? "- cantidad" : ""}
+${!session.pedido.ubicacion ? "- ubicación (recoger o dirección)" : ""}
 `;
 
   const catalogoInfo = Object.entries(catalogo)
-    .map(([id, prod]) => `id: ${id}, nombre: ${prod.nombre}`)
+    .map(([id, prod]) => `id: ${id}, nombre: ${prod.nombre}${prod.tonos ? ` (tonos: ${prod.tonos.join(",")})` : ""}`)
     .join("\n");
 
   const systemPrompt = `
-Eres Ana, asesora de ventas de Ladrillera La Toscana (Némocon, Colombia). Hablas como una persona normal, cálida, usas "jaja", "uy", "dale", "listo", "epa", "qué más", "veci". Tus respuestas son cortas. EVITA palabras robóticas como "anotado", "procesar", "formal", "registrado", "actualizado". NO des opiniones personales tipo "me encanta". En su lugar, recomienda el producto con argumentos de venta (calidad, resistencia, durabilidad). NO asumas cantidades.
+Eres Ana, asesora de Ladrillera La Toscana (Némocon, Colombia). Hablas como una persona normal, cálida, usas "jaja", "uy", "dale", "listo", "epa", "qué más". Tus respuestas son cortas y humanas. EVITA palabras robóticas como "anotado", "procesar", "formal", "registrado", "actualizado". Nunca asumas cantidades.
 
 ${estadoPedido}
 
-INSTRUCCIONES:
-- SIEMPRE saluda si el usuario dice "hola", "buenos días". Responde con "¡Hola! Buenos días, ¿cómo vas?" antes de preguntar qué busca.
-- Si pide "adoquines" o "fachaletas" → acción "mostrar_adoquines" o "mostrar_fachaletas".
-- Si da nombre de producto (ej: "20x10x6") → acción "enviar_imagenes".
-- Si da color → acción "actualizar_tonalidad".
-- Si da cantidad → acción "actualizar_cantidad". NUNCA pongas una cantidad inventada.
-- Si da dirección o ciudad → acción "actualizar_ubicacion".
-- Después de actualizar, solo confirma con una frase humana. La función preguntarSiguienteDato se encargará de la siguiente pregunta.
+REGLAS:
+- Si el usuario pide un producto específico (ej: "20x10x6", "adoquín 20x10x6"), acción "enviar_imagenes" con el producto_id.
+- Si el usuario pide "catálogo" o "qué tienes", acción "mostrar_catalogo".
+- Si el usuario da un color (ej: "durazno"), acción "actualizar_tonalidad".
+- NO generes acciones para cantidad o ubicación porque ya se detectan automáticamente.
+- Responde con una frase amable y la acción correspondiente.
 
 Responde SOLO con JSON:
 {
-  "respuesta": "texto corto y humano (puede ser vacío)",
-  "accion": "nada | mostrar_adoquines | mostrar_fachaletas | enviar_imagenes | actualizar_tonalidad | actualizar_cantidad | actualizar_ubicacion",
+  "respuesta": "texto corto para el usuario",
+  "accion": "nada | mostrar_catalogo | enviar_imagenes | actualizar_tonalidad",
   "producto_id": "",
-  "tonalidad_valor": "",
-  "cantidad_valor": 0,
-  "ubicacion_valor": ""
+  "tonalidad_valor": ""
 }
 
 Catálogo: ${catalogoInfo}
@@ -243,7 +268,7 @@ ${session.history.slice(-6).map(m => `${m.role === "user" ? "Cliente" : "Ana"}: 
           { role: "system", content: systemPrompt },
           { role: "user", content: textoUsuario }
         ],
-        temperature: 0.7,
+        temperature: 0.5,
         response_format: { type: "json_object" }
       },
       {
@@ -265,15 +290,17 @@ ${session.history.slice(-6).map(m => `${m.role === "user" ? "Cliente" : "Ana"}: 
   }
 
   switch (decision.accion) {
-    case "mostrar_adoquines":
-      await mostrarCatalogoHumano(from, "adoquines");
-      break;
-    case "mostrar_fachaletas":
-      await mostrarCatalogoHumano(from, "fachaletas");
+    case "mostrar_catalogo":
+      await mostrarCatalogoHumano(from);
       break;
     case "enviar_imagenes":
       if (decision.producto_id && catalogo[decision.producto_id]) {
-        await enviarImagenesYContinuar(from, decision.producto_id, session);
+        const item = catalogo[decision.producto_id];
+        await enviarImagenes(from, decision.producto_id);
+        session.pedido.referencia = decision.producto_id;
+        session.pedido.nombreProducto = item.nombre;
+        session.pedido.tonosDisponibles = item.tonos || [];
+        await preguntarProximoDato(from, session);
       } else {
         await enviarMensaje(from, "Ese no aparece, ¿seguro que está en la lista?");
       }
@@ -281,31 +308,16 @@ ${session.history.slice(-6).map(m => `${m.role === "user" ? "Cliente" : "Ana"}: 
     case "actualizar_tonalidad":
       if (decision.tonalidad_valor) {
         session.pedido.tonalidad = decision.tonalidad_valor;
-        await enviarMensaje(from, `Listo, ${decision.tonalidad_valor}.`);
-        await preguntarSiguienteDato(from, session);
-      }
-      break;
-    case "actualizar_cantidad":
-      if (decision.cantidad_valor > 0) {
-        session.pedido.cantidad = decision.cantidad_valor;
-        await enviarMensaje(from, `Ok, ${decision.cantidad_valor} unidades.`);
-        await preguntarSiguienteDato(from, session);
-      }
-      break;
-    case "actualizar_ubicacion":
-      if (decision.ubicacion_valor && !session.pedido.ubicacion) {
-        session.pedido.ubicacion = decision.ubicacion_valor;
-        await enviarMensaje(from, `Entendido, ${decision.ubicacion_valor}.`);
-        if (decision.ubicacion_valor.toLowerCase().includes("némocon") || decision.ubicacion_valor.toLowerCase() === "nemocon") {
-          await enviarMensaje(from, "Aquí la ubicación de la fábrica:");
-          await enviarMensaje(from, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
-        }
-        await preguntarSiguienteDato(from, session);
+        await enviarMensaje(from, `Perfecto, ${decision.tonalidad_valor}.`);
+        await preguntarProximoDato(from, session);
       }
       break;
     default:
-      if (!session.pedido.productoNombre || !session.pedido.cantidad || !session.pedido.ubicacion) {
-        await preguntarSiguienteDato(from, session);
+      // Si no hay acción pero faltan datos, preguntar
+      if (!session.pedido.referencia) {
+        await mostrarCatalogoHumano(from);
+      } else {
+        await preguntarProximoDato(from, session);
       }
       break;
   }
@@ -354,13 +366,28 @@ app.post("/webhook", async (req, res) => {
     }
     const session = sessions.get(from);
 
+    // Comandos de prueba
+    if (text === "#reset" || text === "reset" || text === "reiniciar") {
+      session.pedido = JSON.parse(JSON.stringify(defaultPedido));
+      session.cotizacionOfrecida = false;
+      session.history = [];
+      session.presentado = false;
+      await enviarMensaje(from, "🔄 Sesión reiniciada. Todo limpio.");
+      return res.sendStatus(200);
+    }
+    if (text === "#estado") {
+      const estado = `Producto: ${session.pedido.nombreProducto || "❌"}\nColor: ${session.pedido.tonalidad || "❌"}\nCantidad: ${session.pedido.cantidad ?? "❌"}\nUbicación: ${session.pedido.ubicacion || "❌"}`;
+      await enviarMensaje(from, estado);
+      return res.sendStatus(200);
+    }
+
     const esPrimerMensaje = !session.presentado;
     const esSaludo = /^(hola|buenos días|buenas tardes|buenas noches|qué hubo|qué más|saludos|hey|epa|veci)$/i.test(text.trim());
 
     if (esPrimerMensaje && esSaludo) {
       session.presentado = true;
-      await enviarMensaje(from, "¡Hola! Buenos días, ¿cómo vas? Cuéntame qué estás buscando, si adoquines, fachaletas o algún otro producto, con gusto te ayudo.");
-      session.history.push({ role: "assistant", content: "¡Hola! Buenos días, ¿cómo vas?..." });
+      await enviarMensaje(from, "¡Hola! ¿Cómo vas? Cuéntame qué estás buscando, si adoquines o fachaletas, con gusto te ayudo.");
+      session.history.push({ role: "assistant", content: "¡Hola! ¿Cómo vas?..." });
       return res.sendStatus(200);
     }
 
@@ -375,7 +402,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Versión humana con argumentos de venta"));
+app.get("/", (req, res) => res.send("Ana IA - Versión reestructurada"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
