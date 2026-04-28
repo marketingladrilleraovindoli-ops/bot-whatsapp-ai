@@ -31,7 +31,7 @@ function normalizarTexto(texto) {
     .trim();
 }
 
-// Función de similitud (distancia de Levenshtein simple)
+// Distancia de Levenshtein
 function levenshteinDistance(a, b) {
   if (a.length === 0) return b.length;
   if (b.length === 0) return a.length;
@@ -51,18 +51,29 @@ function levenshteinDistance(a, b) {
   return matrix[b.length][a.length];
 }
 
+// Normaliza vocales con tildes y elimina caracteres especiales para mejor comparación
+function normalizarTextoColor(texto) {
+  return texto
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // elimina tildes
+    .replace(/[^a-z]/g, ""); // elimina todo lo que no sea letra
+}
+
 // Encuentra el color más parecido dentro de una lista
 function encontrarColorSimilar(texto, coloresDisponibles) {
-  const lowerTexto = texto.toLowerCase();
-  // Primero búsqueda exacta
-  const exacto = coloresDisponibles.find(c => c.toLowerCase() === lowerTexto);
-  if (exacto) return exacto;
-  // Búsqueda por similitud (tolerancia de hasta 2 caracteres de diferencia)
+  const textoNormalizado = normalizarTextoColor(texto);
+  // Primero búsqueda exacta normalizada
+  for (const color of coloresDisponibles) {
+    if (normalizarTextoColor(color) === textoNormalizado) {
+      return color;
+    }
+  }
+  // Búsqueda por similitud con tolerancia de hasta 3 caracteres
   let mejorMatch = null;
   let menorDistancia = Infinity;
   for (const color of coloresDisponibles) {
-    const distancia = levenshteinDistance(lowerTexto, color.toLowerCase());
-    if (distancia < menorDistancia && distancia <= 2) {
+    const distancia = levenshteinDistance(textoNormalizado, normalizarTextoColor(color));
+    if (distancia < menorDistancia && distancia <= 3) {
       menorDistancia = distancia;
       mejorMatch = color;
     }
@@ -152,9 +163,13 @@ function buscarProducto(texto) {
   return null;
 }
 
+// Mejorada para detectar números grandes correctamente
 function detectarCantidad(texto) {
+  // Primero remover medidas como 20x10x6 para que no interfieran
   let cleanText = texto.replace(/\d+\s*[x*]\s*\d+\s*[x*]\s*\d+/g, '');
-  const match = cleanText.match(/(\d{1,3}(?:[.,]\d{3})*(?:\.\d+)?)/);
+  // Buscar números con o sin separadores de miles (punto o coma)
+  // Soporta: 8000, 8.000, 80,000, 800000
+  const match = cleanText.match(/(\d{1,3}(?:[.,]\d{3})*|\d+)(?:\s*unidades?)?/);
   if (match) {
     let numStr = match[1].replace(/\./g, '').replace(',', '');
     const numero = parseInt(numStr, 10);
@@ -231,16 +246,15 @@ async function procesarConIA(textoUsuario, from, session) {
 
   // 2. Si tiene producto pero no tonalidad
   if (session.pedido.productoId && !session.pedido.tonalidad && session.pedido.tonosDisponibles.length > 0) {
-    // Buscar color exacto o similar
     let colorEncontrado = null;
-    // Primero búsqueda exacta o por inclusión
+    // Buscar coincidencia exacta (normalizada)
     for (const color of session.pedido.tonosDisponibles) {
-      if (textoUsuario.toLowerCase().includes(color.toLowerCase())) {
+      if (normalizarTextoColor(textoUsuario) === normalizarTextoColor(color)) {
         colorEncontrado = color;
         break;
       }
     }
-    // Si no, usar fuzzy matching
+    // Si no, buscar por similitud
     if (!colorEncontrado) {
       colorEncontrado = encontrarColorSimilar(textoUsuario, session.pedido.tonosDisponibles);
     }
@@ -345,7 +359,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Con corrección de errores tipográficos en colores"));
+app.get("/", (req, res) => res.send("Ana IA - Con corrección de colores y cantidades grandes"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
