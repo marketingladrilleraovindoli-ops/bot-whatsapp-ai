@@ -178,30 +178,81 @@ function detectarCantidad(texto) {
   return null;
 }
 
+// ==================== FUNCIÓN DE UBICACIÓN MEJORADA ====================
 async function procesarUbicacion(texto, to, session) {
-  const lower = texto.toLowerCase();
-  const recogerFabricaPatterns = /recoger|pasar|retirar|fábrica|planta|dónde\s+queda|ubicación\s+de\s+la\s+fábrica|en\s+némocon\s*(?:para\s+recoger|lo\s+recojo|paso\s+a\s+recoger)|dónde\s+están\s+ubicados|dónde\s+es|dirección\s+de\s+la\s+planta/i;
-  if (recogerFabricaPatterns.test(lower)) {
+  const lower = texto.toLowerCase().trim();
+  
+  // 1. Patrones para cuando el usuario pregunta por la ubicación de la fábrica (recoger)
+  const recogerFabricaPatterns = [
+    /recoger|pasar|retirar|fábrica|planta/i,
+    /dónde\s+(?:queda|est[aá]n|encuentro|puedo\s+recoger|est[aá]\s+ubicad[oa]s?)/i,
+    /ubicación\s+(?:de\s+la\s+fábrica|de\s+la\s+planta)/i,
+    /en\s+némocon\s+(?:para\s+recoger|lo\s+recojo|paso\s+a\s+recoger)/i,
+    /dónde\s+(?:están|está)\s+ubicados/i,
+    /dónde\s+es\s+que\s+están/i,
+    /dirección\s+de\s+la\s+(?:fábrica|planta|empresa)/i,
+    /dónde\s+queda\s+la\s+(?:fábrica|planta|empresa)/i,
+    /ustedes\s+dónde\s+están/i,
+    /en\s+qué\s+parte\s+están/i,
+    /para\s+recoger\s+dónde\s+es/i,
+    /puedo\s+ir\s+a\s+recoger/i
+  ];
+  
+  const esPreguntaFabrica = recogerFabricaPatterns.some(pattern => pattern.test(lower));
+  if (esPreguntaFabrica) {
     await enviarMensaje(to, "¡Perfecto! Puedes recoger en nuestra fábrica en Némocon. Aquí te mando la ubicación exacta:");
     await enviarMensaje(to, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
     session.pedido.ubicacion = "Recogida en fábrica (Némocon)";
     return true;
   }
-  const direccionPatterns = /(calle|carrera|avenida|av\.|cra\.|cl\.|diagonal|transversal)\s+[\d#\s\-]+/i;
+  
+  // 2. Dirección completa (calle, carrera, etc.)
+  const direccionPatterns = /(calle|carrera|avenida|av\.|cra\.|cl\.|diagonal|transversal|kilómetro|km)\s+[\d#\s\-\.]+/i;
   if (direccionPatterns.test(lower)) {
     session.pedido.ubicacion = texto;
     await enviarMensaje(to, `Dirección guardada: ${texto}`);
     return true;
   }
-  const ciudadMatch = lower.match(/^(chía|bogotá|zipaquirá|tocancipá|sopo|cajicá|nemocon)$/i);
-  if (ciudadMatch) {
-    session.pedido.ubicacion = ciudadMatch[0];
-    await enviarMensaje(to, `Entendido, ${ciudadMatch[0]}. ¿Me das la dirección completa?`);
-    return false;
+  
+  // 3. Detectar ciudades (incluyendo errores comunes)
+  const ciudades = [
+    "chía", "chia", "bogotá", "bogota", "zipaquirá", "zipaquira", 
+    "tocancipá", "tocancipa", "sopó", "sopo", "cajicá", "cajica", 
+    "némocon", "nemocon", "madrid", "funza", "mosquera", "facatativá", "facatativa"
+  ];
+  
+  // Limpiar el texto para quedarnos solo con posibles nombres de ciudad
+  const palabras = lower.split(/\s+/);
+  let ciudadEncontrada = null;
+  for (const palabra of palabras) {
+    for (const ciudad of ciudades) {
+      if (palabra === ciudad || palabra.includes(ciudad)) {
+        ciudadEncontrada = ciudad;
+        break;
+      }
+    }
+    if (ciudadEncontrada) break;
   }
-  await enviarMensaje(to, "No entendí bien la ubicación. Dime si quieres recoger en nuestra fábrica (Némocon) o escríbeme la dirección completa para envío.");
+  
+  if (ciudadEncontrada) {
+    session.pedido.ubicacion = ciudadEncontrada;
+    // Si es Némocon, ya sabemos que es recogida
+    if (ciudadEncontrada === "némocon" || ciudadEncontrada === "nemocon") {
+      await enviarMensaje(to, "Perfecto, puedes recoger en nuestra fábrica en Némocon. Aquí te mando la ubicación:");
+      await enviarMensaje(to, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
+      session.pedido.ubicacion = "Recogida en fábrica (Némocon)";
+      return true;
+    } else {
+      await enviarMensaje(to, `Entendido, ${ciudadEncontrada}. ¿Me das la dirección completa para el envío?`);
+      return false; // Aún falta la dirección
+    }
+  }
+  
+  // 4. Si no entendió nada
+  await enviarMensaje(to, "No entendí bien la ubicación. Dime si quieres recoger en nuestra fábrica (Némocon) o escríbeme la dirección completa para envío (ej: Calle 10 # 20-30, Chía).");
   return false;
 }
+// =======================================================================
 
 async function mostrarResumenYcotizacion(to, session) {
   const { productoNombre, tonalidad, cantidad, ubicacion } = session.pedido;
@@ -359,7 +410,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Con corrección de colores y cantidades grandes"));
+app.get("/", (req, res) => res.send("Ana IA - Con corrección de colores, cantidades grandes y ubicación mejorada"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
