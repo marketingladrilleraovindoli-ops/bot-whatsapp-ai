@@ -67,31 +67,25 @@ async function enviarImagenes(to, productoId) {
   return true;
 }
 
-// Función central: pregunta el siguiente dato faltante (color -> cantidad -> ubicación)
-async function preguntarSiguienteDato(to, session, mensajeAdicional = "") {
+// Pregunta el siguiente dato faltante: color → cantidad → ubicación
+async function preguntarSiguienteDato(to, session) {
   if (!session.pedido.productoNombre) {
     await mostrarCatalogoHumano(to);
     return;
   }
   if (session.pedido.tonosDisponibles.length > 0 && !session.pedido.tonalidad) {
-    let msg = `¿De qué color lo quieres? Tenemos ${session.pedido.tonosDisponibles.join(", ")}.`;
-    if (mensajeAdicional) msg = mensajeAdicional + " " + msg;
-    await enviarMensaje(to, msg);
+    await enviarMensaje(to, `¿De qué color lo quieres? Tenemos ${session.pedido.tonosDisponibles.join(", ")}.`);
     return;
   }
   if (!session.pedido.cantidad) {
-    let msg = "¿Cuántas unidades necesitas? Así te ayudo con el precio.";
-    if (mensajeAdicional) msg = mensajeAdicional + " " + msg;
-    await enviarMensaje(to, msg);
+    await enviarMensaje(to, "¿Cuántas unidades necesitas? Así te ayudo con el precio.");
     return;
   }
   if (!session.pedido.ubicacion) {
-    let msg = "¿Dónde te lo mandamos? Si es en Némocon, puedes pasar a recoger. Dame la dirección completa.";
-    if (mensajeAdicional) msg = mensajeAdicional + " " + msg;
-    await enviarMensaje(to, msg);
+    await enviarMensaje(to, "¿Dónde te lo mandamos? Si es en Némocon, puedes pasar a recoger. Dame la dirección completa.");
     return;
   }
-  // Ya tiene todo: mostrar resumen + beneficios + cotización
+  // Ya tiene todos los datos → mostrar resumen con beneficios y ofrecer cotización
   await mostrarResumenYOferta(to, session);
 }
 
@@ -101,17 +95,19 @@ async function mostrarResumenYOferta(to, session) {
   const cantidad = session.pedido.cantidad;
   const ubicacion = session.pedido.ubicacion;
   
-  // Beneficios del producto (se puede personalizar según el producto)
+  // Beneficios según el producto
   let beneficios = "";
   if (producto.includes("20x10x6")) {
     beneficios = " Este adoquín es ideal para entradas de carros y zonas de alto tránsito, súper resistente. Además, su color dura mucho tiempo sin decolorarse.";
   } else if (producto.includes("fachaleta")) {
     beneficios = " Es perfecta para fachadas elegantes, fácil de instalar y con acabado premium.";
+  } else if (producto.includes("ecológico")) {
+    beneficios = " Es amigable con el ambiente y de gran durabilidad.";
   } else {
     beneficios = " Es un producto de excelente calidad, fabricado con materiales seleccionados.";
   }
   
-  await enviarMensaje(to, `Listo, tengo tu pedido: ${producto}, color ${color}, ${cantidad} unidades, envío a ${ubicacion}. ${beneficios} ¿Quieres que te prepare una cotización formal?`);
+  await enviarMensaje(to, `Listo, tengo tu pedido: ${producto}, color ${color}, ${cantidad} unidades, envío a ${ubicacion}.${beneficios} ¿Quieres que te prepare una cotización formal?`);
   session.cotizacionOfrecida = true;
 }
 
@@ -125,7 +121,7 @@ async function enviarImagenesYContinuar(to, productoId, session) {
   session.pedido.productoId = productoId;
   session.pedido.productoNombre = item.nombre;
   session.pedido.tonosDisponibles = item.tonos || [];
-  await preguntarSiguienteDato(to, session, "Te muestro la info.");
+  await preguntarSiguienteDato(to, session);
 }
 
 async function mostrarCatalogoHumano(to, categoria = null) {
@@ -165,18 +161,16 @@ async function procesarConIA(textoUsuario, from, session) {
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
-  // Detectar cantidad
+  // Detectar cantidad en el mensaje (sin asumir)
   const nuevaCantidad = detectarCantidad(textoUsuario);
   if (nuevaCantidad !== null && session.pedido.cantidad !== nuevaCantidad) {
     session.pedido.cantidad = nuevaCantidad;
-    // No enviar mensaje aquí, lo hará la IA o la función de actualización
   }
 
-  // Detectar cambios de ubicación (correcciones)
+  // Detectar cambios de ubicación (correcciones como "prefiero Chía")
   const lower = textoUsuario.toLowerCase();
   let nuevaUbicacion = null;
   if (lower.includes("prefiero") || lower.includes("cambio") || lower.includes("mejor") || lower.includes("en lugar de")) {
-    // Extraer posible ciudad/dirección
     const match = lower.match(/(?:a|en|para)\s+([a-záéíóúñ\s]+)$/i);
     if (match && match[1].trim().length > 0) {
       nuevaUbicacion = match[1].trim();
@@ -184,7 +178,6 @@ async function procesarConIA(textoUsuario, from, session) {
   }
   if (nuevaUbicacion && session.pedido.ubicacion !== nuevaUbicacion) {
     session.pedido.ubicacion = nuevaUbicacion;
-    // No enviar mensaje aquí, la IA lo hará
   }
 
   // Estado actual para la IA
@@ -203,28 +196,28 @@ ${!session.pedido.ubicacion ? "- dirección de envío" : ""}
 `;
 
   const catalogoInfo = Object.entries(catalogo)
-    .map(([id, prod]) => `id: ${id}, nombre: ${prod.nombre}`)
+    .map(([id, prod]) => `id: ${id}, nombre: ${prod.nombre}${prod.tonos ? ` (tonos: ${prod.tonos.join(",")})` : ""}`)
     .join("\n");
 
   const systemPrompt = `
-Eres Ana, asesora de Ladrillera La Toscana (Némocon, Colombia). Hablas como una persona normal, cálida, usas "jaja", "uy", "dale", "listo", "epa", "qué más", "veci". Tus respuestas son cortas y humanas. EVITA palabras robóticas como "anotado", "procesar", "formal", "registrado", "actualizado". En lugar de "Listo, durazno" di "Durazno, buena elección" o "Perfecto". En lugar de "Ok, he actualizado la cantidad" di "Listo, 500 unidades".
+Eres Ana, asesora de Ladrillera La Toscana (Némocon, Colombia). Hablas como una persona normal, cálida, usas "jaja", "uy", "dale", "listo", "epa", "qué más", "veci". Tus respuestas son cortas y humanas. EVITA palabras robóticas como "anotado", "procesar", "formal", "registrado", "actualizado". En lugar de "Listo, durazno" di "Durazno, buena elección". En lugar de "Ok, he actualizado la cantidad" di "Listo, 500 unidades".
 
 ${estadoPedido}
 
 REGLAS ESTRICTAS:
-- NUNCA asumas una cantidad o ubicación que el usuario no haya dado explícitamente.
-- SIEMPRE sigue el orden: producto -> color -> cantidad -> ubicación.
-- Si el usuario da un producto, usa acción "enviar_imagenes". Luego la función preguntará color.
-- Si da un color, usa "actualizar_tonalidad". Luego la función preguntará cantidad.
-- Si da una cantidad, usa "actualizar_cantidad". Luego la función preguntará ubicación.
-- Si da una dirección o ciudad, usa "actualizar_ubicacion". Luego la función mostrará resumen.
-- Si el usuario corrige la cantidad o ubicación (ej: "no son 20, son 1000"), actualiza el campo correspondiente y luego continúa con el siguiente dato faltante.
-- Después de actualizar, solo confirma con una frase humana y NO preguntes el siguiente dato en el mismo mensaje (la función preguntarSiguienteDato lo hará después).
-- Cuando ya no falten datos, la función mostrarResumenYOferta se encargará de dar los beneficios y ofrecer cotización.
+- NUNCA asumas una cantidad o ubicación. Si el usuario no la ha dado, el campo estará vacío.
+- SIEMPRE sigue el orden: producto → color → cantidad → ubicación.
+- Si el usuario da un producto → acción "enviar_imagenes".
+- Si da un color → acción "actualizar_tonalidad".
+- Si da una cantidad → acción "actualizar_cantidad".
+- Si da una dirección o ciudad → acción "actualizar_ubicacion".
+- Si el usuario corrige (ej: "no son 20, son 1000") → actualiza el campo correspondiente.
+- Después de actualizar, solo confirma con una frase humana. NO preguntes el siguiente dato en el mismo mensaje (la función preguntarSiguienteDato lo hará después).
+- Cuando ya no falten datos, NO generes resumen; la función mostrarResumenYOferta lo hará automáticamente.
 
 Responde SOLO con JSON:
 {
-  "respuesta": "texto corto y humano (puede ser vacío si la acción lo maneja)",
+  "respuesta": "texto corto y humano (puede ser vacío si la acción no necesita texto adicional)",
   "accion": "nada | mostrar_adoquines | mostrar_fachaletas | enviar_imagenes | actualizar_tonalidad | actualizar_cantidad | actualizar_ubicacion",
   "producto_id": "",
   "tonalidad_valor": "",
@@ -263,7 +256,7 @@ ${session.history.slice(-6).map(m => `${m.role === "user" ? "Cliente" : "Ana"}: 
     };
   }
 
-  // Enviar respuesta si existe
+  // Enviar respuesta textual si existe
   if (decision.respuesta && decision.respuesta.trim() !== "") {
     await enviarMensaje(from, decision.respuesta);
     session.history.push({ role: "assistant", content: decision.respuesta });
@@ -285,38 +278,29 @@ ${session.history.slice(-6).map(m => `${m.role === "user" ? "Cliente" : "Ana"}: 
       }
       break;
     case "actualizar_tonalidad":
-      if (decision.tonalidad_valor && session.pedido.tonalidad !== decision.tonalidad_valor) {
+      if (decision.tonalidad_valor) {
         session.pedido.tonalidad = decision.tonalidad_valor;
-        // La confirmación ya la hizo la IA en decision.respuesta, así que solo preguntamos siguiente dato
-        await preguntarSiguienteDato(from, session);
-      } else if (decision.tonalidad_valor) {
-        // Ya tenía ese color, preguntar siguiente dato igual
         await preguntarSiguienteDato(from, session);
       }
       break;
     case "actualizar_cantidad":
-      if (decision.cantidad_valor > 0 && session.pedido.cantidad !== decision.cantidad_valor) {
+      if (decision.cantidad_valor > 0) {
         session.pedido.cantidad = decision.cantidad_valor;
-        await preguntarSiguienteDato(from, session);
-      } else if (decision.cantidad_valor > 0) {
         await preguntarSiguienteDato(from, session);
       }
       break;
     case "actualizar_ubicacion":
-      if (decision.ubicacion_valor && session.pedido.ubicacion !== decision.ubicacion_valor) {
+      if (decision.ubicacion_valor) {
         session.pedido.ubicacion = decision.ubicacion_valor;
-        // Si es Némocon, ofrecer mapa
         if (decision.ubicacion_valor.toLowerCase().includes("némocon") || decision.ubicacion_valor.toLowerCase() === "nemocon") {
           await enviarMensaje(from, "Aquí tienes la ubicación de la fábrica para que pases a recoger:");
           await enviarMensaje(from, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
         }
         await preguntarSiguienteDato(from, session);
-      } else if (decision.ubicacion_valor) {
-        await preguntarSiguienteDato(from, session);
       }
       break;
     default:
-      // Si no hay acción pero faltan datos, preguntar
+      // Si no hubo acción pero faltan datos, preguntar; si ya están todos y no se ha ofrecido cotización, mostrarla
       if (!session.pedido.productoNombre || !session.pedido.cantidad || !session.pedido.ubicacion) {
         await preguntarSiguienteDato(from, session);
       } else if (session.pedido.productoNombre && session.pedido.tonalidad && session.pedido.cantidad && session.pedido.ubicacion && !session.cotizacionOfrecida) {
@@ -390,7 +374,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Versión humana con flujo corregido"));
+app.get("/", (req, res) => res.send("Ana IA - Versión humana definitiva"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
