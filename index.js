@@ -55,20 +55,18 @@ function levenshteinDistance(a, b) {
 function normalizarTextoColor(texto) {
   return texto
     .toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // elimina tildes
-    .replace(/[^a-z]/g, ""); // elimina todo lo que no sea letra
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z]/g, "");
 }
 
 // Encuentra el color más parecido dentro de una lista
 function encontrarColorSimilar(texto, coloresDisponibles) {
   const textoNormalizado = normalizarTextoColor(texto);
-  // Primero búsqueda exacta normalizada
   for (const color of coloresDisponibles) {
     if (normalizarTextoColor(color) === textoNormalizado) {
       return color;
     }
   }
-  // Búsqueda por similitud con tolerancia de hasta 3 caracteres
   let mejorMatch = null;
   let menorDistancia = Infinity;
   for (const color of coloresDisponibles) {
@@ -163,12 +161,8 @@ function buscarProducto(texto) {
   return null;
 }
 
-// Mejorada para detectar números grandes correctamente
 function detectarCantidad(texto) {
-  // Primero remover medidas como 20x10x6 para que no interfieran
   let cleanText = texto.replace(/\d+\s*[x*]\s*\d+\s*[x*]\s*\d+/g, '');
-  // Buscar números con o sin separadores de miles (punto o coma)
-  // Soporta: 8000, 8.000, 80,000, 800000
   const match = cleanText.match(/(\d{1,3}(?:[.,]\d{3})*|\d+)(?:\s*unidades?)?/);
   if (match) {
     let numStr = match[1].replace(/\./g, '').replace(',', '');
@@ -178,24 +172,28 @@ function detectarCantidad(texto) {
   return null;
 }
 
-// ==================== FUNCIÓN DE UBICACIÓN MEJORADA ====================
+// ==================== FUNCIÓN DE UBICACIÓN MEJORADA (VERSIÓN FINAL) ====================
 async function procesarUbicacion(texto, to, session) {
   const lower = texto.toLowerCase().trim();
   
-  // 1. Patrones para cuando el usuario pregunta por la ubicación de la fábrica (recoger)
+  // 1. Patrones para preguntar por la ubicación de la fábrica (recoger)
+  // Incluye variaciones sin acentos, con "estan", "ubicados", etc.
   const recogerFabricaPatterns = [
     /recoger|pasar|retirar|fábrica|planta/i,
-    /dónde\s+(?:queda|est[aá]n|encuentro|puedo\s+recoger|est[aá]\s+ubicad[oa]s?)/i,
+    /dónde\s+(?:queda|est[aá]n|estan|encuentro|puedo\s+recoger|est[aá]\s+ubicad[oa]s?)/i,
     /ubicación\s+(?:de\s+la\s+fábrica|de\s+la\s+planta)/i,
     /en\s+némocon\s+(?:para\s+recoger|lo\s+recojo|paso\s+a\s+recoger)/i,
-    /dónde\s+(?:están|está)\s+ubicados/i,
+    /dónde\s+(?:están|estan|está|esta)\s+ubicados/i,
     /dónde\s+es\s+que\s+están/i,
     /dirección\s+de\s+la\s+(?:fábrica|planta|empresa)/i,
     /dónde\s+queda\s+la\s+(?:fábrica|planta|empresa)/i,
     /ustedes\s+dónde\s+están/i,
     /en\s+qué\s+parte\s+están/i,
     /para\s+recoger\s+dónde\s+es/i,
-    /puedo\s+ir\s+a\s+recoger/i
+    /puedo\s+ir\s+a\s+recoger/i,
+    /donde\s+estan\s+ubicados/i,
+    /donde\s+queda\s+la\s+fabrica/i,
+    /donde\s+los\s+puedo\s+recoger/i
   ];
   
   const esPreguntaFabrica = recogerFabricaPatterns.some(pattern => pattern.test(lower));
@@ -221,7 +219,6 @@ async function procesarUbicacion(texto, to, session) {
     "némocon", "nemocon", "madrid", "funza", "mosquera", "facatativá", "facatativa"
   ];
   
-  // Limpiar el texto para quedarnos solo con posibles nombres de ciudad
   const palabras = lower.split(/\s+/);
   let ciudadEncontrada = null;
   for (const palabra of palabras) {
@@ -236,7 +233,6 @@ async function procesarUbicacion(texto, to, session) {
   
   if (ciudadEncontrada) {
     session.pedido.ubicacion = ciudadEncontrada;
-    // Si es Némocon, ya sabemos que es recogida
     if (ciudadEncontrada === "némocon" || ciudadEncontrada === "nemocon") {
       await enviarMensaje(to, "Perfecto, puedes recoger en nuestra fábrica en Némocon. Aquí te mando la ubicación:");
       await enviarMensaje(to, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
@@ -244,7 +240,7 @@ async function procesarUbicacion(texto, to, session) {
       return true;
     } else {
       await enviarMensaje(to, `Entendido, ${ciudadEncontrada}. ¿Me das la dirección completa para el envío?`);
-      return false; // Aún falta la dirección
+      return false;
     }
   }
   
@@ -298,14 +294,12 @@ async function procesarConIA(textoUsuario, from, session) {
   // 2. Si tiene producto pero no tonalidad
   if (session.pedido.productoId && !session.pedido.tonalidad && session.pedido.tonosDisponibles.length > 0) {
     let colorEncontrado = null;
-    // Buscar coincidencia exacta (normalizada)
     for (const color of session.pedido.tonosDisponibles) {
       if (normalizarTextoColor(textoUsuario) === normalizarTextoColor(color)) {
         colorEncontrado = color;
         break;
       }
     }
-    // Si no, buscar por similitud
     if (!colorEncontrado) {
       colorEncontrado = encontrarColorSimilar(textoUsuario, session.pedido.tonosDisponibles);
     }
@@ -410,7 +404,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Con corrección de colores, cantidades grandes y ubicación mejorada"));
+app.get("/", (req, res) => res.send("Ana IA - Versión final con detección de ubicación robusta"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
