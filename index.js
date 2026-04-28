@@ -18,7 +18,7 @@ const defaultPedido = {
   productoId: null,
   productoNombre: null,
   tonalidad: null,
-  cantidad: null,
+  cantidad: null,      // ¡Nunca asignar un valor por defecto!
   ubicacion: null,
   tonosDisponibles: []
 };
@@ -67,7 +67,7 @@ async function enviarImagenes(to, productoId) {
   return true;
 }
 
-// Pregunta el siguiente dato faltante: color → cantidad → ubicación
+// Función unificada que pregunta el siguiente dato faltante (solo uno)
 async function preguntarSiguienteDato(to, session) {
   if (!session.pedido.productoNombre) {
     await mostrarCatalogoHumano(to);
@@ -77,7 +77,7 @@ async function preguntarSiguienteDato(to, session) {
     await enviarMensaje(to, `¿De qué color lo quieres? Tenemos ${session.pedido.tonosDisponibles.join(", ")}.`);
     return;
   }
-  if (!session.pedido.cantidad) {
+  if (session.pedido.cantidad === null) {
     await enviarMensaje(to, "¿Cuántas unidades necesitas? Así te ayudo con el precio.");
     return;
   }
@@ -85,7 +85,7 @@ async function preguntarSiguienteDato(to, session) {
     await enviarMensaje(to, "¿Dónde te lo mandamos? Si es en Némocon, puedes pasar a recoger. Dame la dirección completa.");
     return;
   }
-  // Ya tiene todos los datos → mostrar resumen con beneficios y ofrecer cotización
+  // Ya tiene todos los datos
   await mostrarResumenYOferta(to, session);
 }
 
@@ -95,7 +95,6 @@ async function mostrarResumenYOferta(to, session) {
   const cantidad = session.pedido.cantidad;
   const ubicacion = session.pedido.ubicacion;
   
-  // Beneficios según el producto
   let beneficios = "";
   if (producto.includes("20x10x6")) {
     beneficios = " Este adoquín es ideal para entradas de carros y zonas de alto tránsito, súper resistente. Además, su color dura mucho tiempo sin decolorarse.";
@@ -148,6 +147,7 @@ async function mostrarCatalogoHumano(to, categoria = null) {
 }
 
 function detectarCantidad(texto) {
+  // Solo números explícitos como 100, 1.000, 10,000
   const match = texto.match(/(\d{1,3}(?:[.,]\d{3})*(?:\.\d+)?)/);
   if (match) {
     let numStr = match[1].replace(/\./g, '').replace(',', '');
@@ -157,17 +157,31 @@ function detectarCantidad(texto) {
   return null;
 }
 
+// Detectar si el usuario pregunta por la ubicación de la fábrica
+function esPreguntaUbicacionFabrica(texto) {
+  const lower = texto.toLowerCase();
+  return /dónde queda|en qué parte|ubicación de la fábrica|dirección de la planta|dónde lo puedo recoger|pasar a recoger|en que parte lo puedo recoger/i.test(lower);
+}
+
 async function procesarConIA(textoUsuario, from, session) {
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
-  // Detectar cantidad en el mensaje (sin asumir)
+  // PRIORIDAD: Si pregunta por la ubicación de la fábrica, responder y salir
+  if (esPreguntaUbicacionFabrica(textoUsuario)) {
+    await enviarMensaje(from, "Claro, la fábrica queda en Némocon. Aquí te mando la ubicación exacta para que pases a recoger:");
+    await enviarMensaje(from, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
+    session.history.push({ role: "assistant", content: "Claro, la fábrica queda en Némocon. Aquí te mando la ubicación..." });
+    return;
+  }
+
+  // Detectar cantidad explícita (SIN asumir nunca)
   const nuevaCantidad = detectarCantidad(textoUsuario);
-  if (nuevaCantidad !== null && session.pedido.cantidad !== nuevaCantidad) {
+  if (nuevaCantidad !== null && nuevaCantidad !== session.pedido.cantidad) {
     session.pedido.cantidad = nuevaCantidad;
   }
 
-  // Detectar cambios de ubicación (correcciones como "prefiero Chía")
+  // Detectar cambio de ubicación
   const lower = textoUsuario.toLowerCase();
   let nuevaUbicacion = null;
   if (lower.includes("prefiero") || lower.includes("cambio") || lower.includes("mejor") || lower.includes("en lugar de")) {
@@ -185,13 +199,13 @@ async function procesarConIA(textoUsuario, from, session) {
 DATOS ACTUALES:
 - Producto: ${session.pedido.productoNombre || "ninguno"}
 - Color: ${session.pedido.tonalidad || "ninguno"}
-- Cantidad: ${session.pedido.cantidad || "ninguna"}
+- Cantidad: ${session.pedido.cantidad === null ? "ninguna" : session.pedido.cantidad}
 - Ubicación: ${session.pedido.ubicacion || "ninguna"}
 
 FALTAN (en orden estricto):
 ${!session.pedido.productoNombre ? "- producto" : ""}
 ${(!session.pedido.tonalidad && session.pedido.tonosDisponibles.length > 0) ? "- color (" + session.pedido.tonosDisponibles.join(", ") + ")" : ""}
-${!session.pedido.cantidad ? "- cantidad" : ""}
+${session.pedido.cantidad === null ? "- cantidad" : ""}
 ${!session.pedido.ubicacion ? "- dirección de envío" : ""}
 `;
 
@@ -200,24 +214,24 @@ ${!session.pedido.ubicacion ? "- dirección de envío" : ""}
     .join("\n");
 
   const systemPrompt = `
-Eres Ana, asesora de Ladrillera La Toscana (Némocon, Colombia). Hablas como una persona normal, cálida, usas "jaja", "uy", "dale", "listo", "epa", "qué más", "veci". Tus respuestas son cortas y humanas. EVITA palabras robóticas como "anotado", "procesar", "formal", "registrado", "actualizado". En lugar de "Listo, durazno" di "Durazno, buena elección". En lugar de "Ok, he actualizado la cantidad" di "Listo, 500 unidades".
+Eres Ana, asesora de ventas de Ladrillera La Toscana (Némocon, Colombia). Hablas como una persona normal, cálida, usas "jaja", "uy", "dale", "listo", "epa", "qué más", "veci". Tus respuestas son cortas y humanas. EVITA palabras robóticas como "anotado", "procesar", "formal", "registrado", "actualizado".
 
 ${estadoPedido}
 
 REGLAS ESTRICTAS:
-- NUNCA asumas una cantidad o ubicación. Si el usuario no la ha dado, el campo estará vacío.
-- SIEMPRE sigue el orden: producto → color → cantidad → ubicación.
-- Si el usuario da un producto → acción "enviar_imagenes".
-- Si da un color → acción "actualizar_tonalidad".
-- Si da una cantidad → acción "actualizar_cantidad".
-- Si da una dirección o ciudad → acción "actualizar_ubicacion".
-- Si el usuario corrige (ej: "no son 20, son 1000") → actualiza el campo correspondiente.
-- Después de actualizar, solo confirma con una frase humana. NO preguntes el siguiente dato en el mismo mensaje (la función preguntarSiguienteDato lo hará después).
-- Cuando ya no falten datos, NO generes resumen; la función mostrarResumenYOferta lo hará automáticamente.
+- NUNCA asumas una cantidad ni una ubicación. Si el usuario no la ha dado, el campo estará vacío.
+- SIEMPRE sigue el orden: producto -> color -> cantidad -> ubicación.
+- Si el usuario da un producto (ej: "20x10x6") -> acción "enviar_imagenes".
+- Si da un color (ej: "durazno") -> acción "actualizar_tonalidad".
+- Si da un número (ej: "1000") -> acción "actualizar_cantidad".
+- Si da una dirección o ciudad (ej: "Chía", "Calle 15") -> acción "actualizar_ubicacion".
+- NUNCA uses "20" ni ningún número si el usuario no lo ha escrito.
+- Después de actualizar, SOLO confirma con una frase humana. NO preguntes el siguiente dato (lo hará la función externa).
+- Cuando ya no falten datos, NO generes resumen; la función mostrarResumenYOferta lo hará después.
 
 Responde SOLO con JSON:
 {
-  "respuesta": "texto corto y humano (puede ser vacío si la acción no necesita texto adicional)",
+  "respuesta": "texto corto (vacío si no necesitas agregar nada)",
   "accion": "nada | mostrar_adoquines | mostrar_fachaletas | enviar_imagenes | actualizar_tonalidad | actualizar_cantidad | actualizar_ubicacion",
   "producto_id": "",
   "tonalidad_valor": "",
@@ -240,7 +254,7 @@ ${session.history.slice(-6).map(m => `${m.role === "user" ? "Cliente" : "Ana"}: 
           { role: "system", content: systemPrompt },
           { role: "user", content: textoUsuario }
         ],
-        temperature: 0.5,
+        temperature: 0.3,
         response_format: { type: "json_object" }
       },
       {
@@ -292,18 +306,13 @@ ${session.history.slice(-6).map(m => `${m.role === "user" ? "Cliente" : "Ana"}: 
     case "actualizar_ubicacion":
       if (decision.ubicacion_valor) {
         session.pedido.ubicacion = decision.ubicacion_valor;
-        if (decision.ubicacion_valor.toLowerCase().includes("némocon") || decision.ubicacion_valor.toLowerCase() === "nemocon") {
-          await enviarMensaje(from, "Aquí tienes la ubicación de la fábrica para que pases a recoger:");
-          await enviarMensaje(from, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
-        }
         await preguntarSiguienteDato(from, session);
       }
       break;
     default:
-      // Si no hubo acción pero faltan datos, preguntar; si ya están todos y no se ha ofrecido cotización, mostrarla
-      if (!session.pedido.productoNombre || !session.pedido.cantidad || !session.pedido.ubicacion) {
+      if (!session.pedido.productoNombre || session.pedido.cantidad === null || !session.pedido.ubicacion) {
         await preguntarSiguienteDato(from, session);
-      } else if (session.pedido.productoNombre && session.pedido.tonalidad && session.pedido.cantidad && session.pedido.ubicacion && !session.cotizacionOfrecida) {
+      } else if (session.pedido.productoNombre && session.pedido.tonalidad && session.pedido.cantidad !== null && session.pedido.ubicacion && !session.cotizacionOfrecida) {
         await mostrarResumenYOferta(from, session);
       }
       break;
