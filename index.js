@@ -20,7 +20,8 @@ const defaultPedido = {
   tonalidad: null,
   cantidad: null,
   ubicacion: null,
-  tonosDisponibles: []
+  tonosDisponibles: [],
+  opcionEnvioPendiente: false  // Nuevo: indica que falta elegir entre envío o recogida
 };
 
 function normalizarTexto(texto) {
@@ -31,7 +32,6 @@ function normalizarTexto(texto) {
     .trim();
 }
 
-// Distancia de Levenshtein
 function levenshteinDistance(a, b) {
   if (a.length === 0) return b.length;
   if (b.length === 0) return a.length;
@@ -51,7 +51,6 @@ function levenshteinDistance(a, b) {
   return matrix[b.length][a.length];
 }
 
-// Normaliza vocales con tildes y elimina caracteres especiales para mejor comparación
 function normalizarTextoColor(texto) {
   return texto
     .toLowerCase()
@@ -59,7 +58,6 @@ function normalizarTextoColor(texto) {
     .replace(/[^a-z]/g, "");
 }
 
-// Encuentra el color más parecido dentro de una lista
 function encontrarColorSimilar(texto, coloresDisponibles) {
   const textoNormalizado = normalizarTextoColor(texto);
   for (const color of coloresDisponibles) {
@@ -172,17 +170,37 @@ function detectarCantidad(texto) {
   return null;
 }
 
-// ==================== FUNCIÓN DE UBICACIÓN MEJORADA (VERSIÓN FINAL) ====================
+// ==================== FUNCIÓN DE UBICACIÓN MEJORADA (CON PREGUNTA EXPLÍCITA) ====================
 async function procesarUbicacion(texto, to, session) {
   const lower = texto.toLowerCase().trim();
   
-  // 1. Patrones para preguntar por la ubicación de la fábrica (recoger)
-  // Incluye variaciones sin acentos, con "estan", "ubicados", etc.
-  const recogerFabricaPatterns = [
+  // Si ya se guardó la ubicación y el usuario está preguntando por envío/corrección, permitir cambiar
+  if (session.pedido.ubicacion) {
+    // Detectar preguntas de envío o cambio
+    if (lower.includes("envío") || lower.includes("envios") || lower.includes("envían") || lower.includes("hacen envíos") || lower.includes("necesito que me lo envíen")) {
+      // Cambiar a modo envío pendiente
+      session.pedido.opcionEnvioPendiente = true;
+      session.pedido.ubicacion = null; // Resetear ubicación para volver a preguntar
+      await enviarMensaje(to, "Entendido, necesitas envío. ¿Cuál es la dirección completa?");
+      return false;
+    }
+    if (lower.includes("recoger") || lower.includes("recojo") || lower.includes("paso a recoger")) {
+      // Cambiar a recogida
+      session.pedido.opcionEnvioPendiente = false;
+      session.pedido.ubicacion = "Recogida en fábrica (Némocon)";
+      await enviarMensaje(to, "Perfecto, puedes recoger en nuestra fábrica. Aquí te mando la ubicación:");
+      await enviarMensaje(to, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
+      return true;
+    }
+    // Si ya tiene ubicación y no está pidiendo cambio, no hacer nada
+    return true;
+  }
+  
+  // 1. Detectar si pregunta por ubicación de la fábrica (sin asumir recogida aún)
+  const preguntaFabricaPatterns = [
     /recoger|pasar|retirar|fábrica|planta/i,
     /dónde\s+(?:queda|est[aá]n|estan|encuentro|puedo\s+recoger|est[aá]\s+ubicad[oa]s?)/i,
     /ubicación\s+(?:de\s+la\s+fábrica|de\s+la\s+planta)/i,
-    /en\s+némocon\s+(?:para\s+recoger|lo\s+recojo|paso\s+a\s+recoger)/i,
     /dónde\s+(?:están|estan|está|esta)\s+ubicados/i,
     /dónde\s+es\s+que\s+están/i,
     /dirección\s+de\s+la\s+(?:fábrica|planta|empresa)/i,
@@ -196,15 +214,34 @@ async function procesarUbicacion(texto, to, session) {
     /donde\s+los\s+puedo\s+recoger/i
   ];
   
-  const esPreguntaFabrica = recogerFabricaPatterns.some(pattern => pattern.test(lower));
+  const esPreguntaFabrica = preguntaFabricaPatterns.some(pattern => pattern.test(lower));
   if (esPreguntaFabrica) {
-    await enviarMensaje(to, "¡Perfecto! Puedes recoger en nuestra fábrica en Némocon. Aquí te mando la ubicación exacta:");
+    // Primero dar la ubicación y preguntar si quiere recoger o envío
+    await enviarMensaje(to, "Nuestra fábrica está en Némocon. Aquí te mando la ubicación:");
     await enviarMensaje(to, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
-    session.pedido.ubicacion = "Recogida en fábrica (Némocon)";
-    return true;
+    await enviarMensaje(to, "¿Prefieres recoger en la fábrica o necesitas que te lo enviemos?");
+    session.pedido.opcionEnvioPendiente = true; // Marcamos que falta decidir
+    return false; // No se ha guardado ubicación aún
   }
   
-  // 2. Dirección completa (calle, carrera, etc.)
+  // 2. Si el usuario responde a la pregunta de envío/recogida
+  if (session.pedido.opcionEnvioPendiente) {
+    if (lower.includes("recoger") || lower.includes("recojo") || lower.includes("paso")) {
+      session.pedido.ubicacion = "Recogida en fábrica (Némocon)";
+      session.pedido.opcionEnvioPendiente = false;
+      await enviarMensaje(to, "Perfecto, entonces recoges en la fábrica. ¡Quedamos pendientes!");
+      return true;
+    } else if (lower.includes("envío") || lower.includes("enviar") || lower.includes("mandar")) {
+      session.pedido.opcionEnvioPendiente = false;
+      await enviarMensaje(to, "Dime la dirección completa para el envío (calle, número, ciudad).");
+      return false;
+    } else {
+      await enviarMensaje(to, "No entendí. ¿Prefieres recoger en la fábrica o que te lo enviemos?");
+      return false;
+    }
+  }
+  
+  // 3. Dirección completa (calle, carrera, etc.)
   const direccionPatterns = /(calle|carrera|avenida|av\.|cra\.|cl\.|diagonal|transversal|kilómetro|km)\s+[\d#\s\-\.]+/i;
   if (direccionPatterns.test(lower)) {
     session.pedido.ubicacion = texto;
@@ -212,7 +249,7 @@ async function procesarUbicacion(texto, to, session) {
     return true;
   }
   
-  // 3. Detectar ciudades (incluyendo errores comunes)
+  // 4. Detectar ciudades (Chía, Bogotá, etc.)
   const ciudades = [
     "chía", "chia", "bogotá", "bogota", "zipaquirá", "zipaquira", 
     "tocancipá", "tocancipa", "sopó", "sopo", "cajicá", "cajica", 
@@ -234,17 +271,18 @@ async function procesarUbicacion(texto, to, session) {
   if (ciudadEncontrada) {
     session.pedido.ubicacion = ciudadEncontrada;
     if (ciudadEncontrada === "némocon" || ciudadEncontrada === "nemocon") {
-      await enviarMensaje(to, "Perfecto, puedes recoger en nuestra fábrica en Némocon. Aquí te mando la ubicación:");
-      await enviarMensaje(to, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
-      session.pedido.ubicacion = "Recogida en fábrica (Némocon)";
-      return true;
+      // Es Némocon, preguntar si recoge o envío
+      await enviarMensaje(to, "Perfecto, podemos coordinar recogida en Némocon. ¿Prefieres recoger en la fábrica o que te lo enviemos a una dirección?");
+      session.pedido.opcionEnvioPendiente = true;
+      session.pedido.ubicacion = null; // Resetear, aún no es definitivo
+      return false;
     } else {
       await enviarMensaje(to, `Entendido, ${ciudadEncontrada}. ¿Me das la dirección completa para el envío?`);
       return false;
     }
   }
   
-  // 4. Si no entendió nada
+  // 5. Si no entendió nada
   await enviarMensaje(to, "No entendí bien la ubicación. Dime si quieres recoger en nuestra fábrica (Némocon) o escríbeme la dirección completa para envío (ej: Calle 10 # 20-30, Chía).");
   return false;
 }
@@ -318,7 +356,7 @@ async function procesarConIA(textoUsuario, from, session) {
     const cantidad = detectarCantidad(textoUsuario);
     if (cantidad !== null && cantidad > 0) {
       session.pedido.cantidad = cantidad;
-      await enviarMensaje(from, `Ok, ${cantidad} unidades. ¿Dónde te lo mandamos? (Si es en Némocon puedes pasar a recoger; dime si prefieres envío o recogida)`);
+      await enviarMensaje(from, `Ok, ${cantidad} unidades. Ahora, ¿dónde te lo mandamos? (Puedes decir 'recoger' para pasar a la fábrica o darme una dirección para envío)`);
       return;
     } else {
       await enviarMensaje(from, "Dime cuántas unidades necesitas (ej: 500, 1000, 10.000).");
@@ -326,11 +364,11 @@ async function procesarConIA(textoUsuario, from, session) {
     }
   }
 
-  // 4. Si falta la ubicación
-  if (!session.pedido.ubicacion) {
+  // 4. Si falta la ubicación (o hay opción de envío pendiente)
+  if (!session.pedido.ubicacion || session.pedido.opcionEnvioPendiente) {
     const resultado = await procesarUbicacion(textoUsuario, from, session);
     if (resultado === true) {
-      if (session.pedido.productoNombre && session.pedido.tonalidad && session.pedido.cantidad !== null && session.pedido.ubicacion) {
+      if (session.pedido.productoNombre && session.pedido.tonalidad && session.pedido.cantidad !== null && session.pedido.ubicacion && !session.pedido.opcionEnvioPendiente) {
         await mostrarResumenYcotizacion(from, session);
       }
       return;
@@ -404,7 +442,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Versión final con detección de ubicación robusta"));
+app.get("/", (req, res) => res.send("Ana IA - Con lógica de envío/recogida mejorada"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
