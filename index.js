@@ -67,10 +67,9 @@ async function enviarImagenes(to, productoId) {
   return true;
 }
 
-// Función unificada que pregunta el siguiente dato faltante (solo uno)
+// Función para preguntar el siguiente dato faltante (orden: color -> cantidad -> ubicación)
 async function preguntarSiguienteDato(to, session) {
   if (!session.pedido.productoNombre) {
-    // Esto no debería pasar, pero por si acaso
     await mostrarCatalogoHumano(to);
     return;
   }
@@ -79,7 +78,7 @@ async function preguntarSiguienteDato(to, session) {
     return;
   }
   if (!session.pedido.cantidad) {
-    await enviarMensaje(to, "¿Cuántas unidades necesitas? (Ej: 10.000)");
+    await enviarMensaje(to, "¿Cuántas unidades necesitas? (Ej: 10.000) Así te ayudo con el precio.");
     return;
   }
   if (!session.pedido.ubicacion) {
@@ -102,7 +101,6 @@ async function enviarImagenesYContinuar(to, productoId, session) {
   session.pedido.productoNombre = item.nombre;
   session.pedido.tonosDisponibles = item.tonos || [];
   
-  // Preguntar el siguiente dato (color, cantidad o ubicación)
   await preguntarSiguienteDato(to, session);
 }
 
@@ -130,7 +128,6 @@ async function mostrarCatalogoHumano(to, categoria = null) {
 }
 
 function detectarCantidad(texto) {
-  // Detecta números como 100, 10.000, 100,000, etc.
   const match = texto.match(/(\d{1,3}(?:[.,]\d{3})*(?:\.\d+)?)/);
   if (match) {
     let numStr = match[1].replace(/\./g, '').replace(',', '');
@@ -140,17 +137,41 @@ function detectarCantidad(texto) {
   return null;
 }
 
+function detectarCambioUbicacion(texto, session) {
+  const lower = texto.toLowerCase();
+  // Si el usuario dice "mejor envíamelo a X", "cambio a X", "prefiero en X"
+  if (lower.includes("mejor") || lower.includes("cambio") || lower.includes("prefiero") || lower.includes("en lugar de")) {
+    // Extraer posible ubicación (palabras después de "a", "en", "para")
+    const match = lower.match(/\b(?:a|en|para)\s+([a-záéíóúñ\s]+)$/i);
+    if (match && match[1].trim().length > 0) {
+      return match[1].trim();
+    }
+  }
+  return null;
+}
+
 async function procesarConIA(textoUsuario, from, session) {
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
-  // 1. Detectar cantidad en el mensaje y actualizar si no la tenía
+  // Detectar correcciones de ubicación
+  const nuevaUbicacion = detectarCambioUbicacion(textoUsuario, session);
+  if (nuevaUbicacion && session.pedido.ubicacion) {
+    // El usuario quiere cambiar la ubicación
+    session.pedido.ubicacion = nuevaUbicacion;
+    await enviarMensaje(from, `Ah ok, entonces lo enviamos a ${nuevaUbicacion}. ¿Me das la dirección completa?`);
+    // No llamamos a preguntarSiguienteDato aquí porque ya tenemos la ubicación pero no la dirección completa? Mejor esperar siguiente mensaje
+    session.history.push({ role: "assistant", content: `Ah ok, entonces lo enviamos a ${nuevaUbicacion}. ¿Me das la dirección completa?` });
+    return;
+  }
+
+  // Detectar cantidad en el mensaje
   const nuevaCantidad = detectarCantidad(textoUsuario);
   if (nuevaCantidad !== null && !session.pedido.cantidad) {
     session.pedido.cantidad = nuevaCantidad;
   }
 
-  // 2. Estado actual para la IA
+  // Estado actual para la IA
   const estadoPedido = `
 DATOS ACTUALES:
 - Producto: ${session.pedido.productoNombre || "ninguno"}
@@ -170,24 +191,25 @@ ${!session.pedido.ubicacion ? "- dirección de envío" : ""}
     .join("\n");
 
   const systemPrompt = `
-Eres Ana, asesora de Ladrillera La Toscana (Némocon, Colombia). Hablas como una persona normal, cálida, usas "jaja", "uy", "dale", "listo", "epa", "qué más". Tus respuestas son cortas, sin frases robóticas como "anotado", "procesar", "formal". Confirmas con "Ok", "Listo", "Perfecto".
+Eres Ana, una asesora de ventas de Ladrillera La Toscana (Némocon, Colombia). Hablas como una persona normal, cálida, usas "jaja", "uy", "dale", "listo", "epa", "qué más", "veci". Tus respuestas son cortas, con emojis ocasionales pero no en exceso. Evitas palabras robóticas como "anotado", "procesar", "formal", "registrado". En lugar de "Listo, durazno" dices "Durazno, buena elección" o "Ok perfecto". En lugar de "Quedó registrado: Némocon" dices "Perfecto, Némocon".
 
 ${estadoPedido}
 
 INSTRUCCIONES ESTRICTAS:
-- Si el usuario saluda, responde breve y pregunta qué busca.
-- Si pide "adoquines" o "fachaletas", usa acción "mostrar_adoquines" o "mostrar_fachaletas".
-- Si da el nombre de un producto (ej: "20x10x8"), usa "enviar_imagenes".
+- SIEMPRE saluda si el usuario dice "hola", "buenos días", etc. Responde con un saludo y luego pregunta qué busca.
+- Si el usuario pide "adoquines" o "fachaletas", usa acción "mostrar_adoquines" o "mostrar_fachaletas".
+- Si da el nombre de un producto (ej: "20x10x6"), usa "enviar_imagenes".
 - Si da un color (ej: "durazno"), usa "actualizar_tonalidad".
 - Si da una cantidad (ej: "100", "10.000"), usa "actualizar_cantidad".
-- Si da una dirección o dice "Némocon", usa "actualizar_ubicacion".
-- NUNCA repitas la misma pregunta.
-- NO envíes múltiples mensajes; la plataforma ya enviará uno por acción.
-- Cuando actualices un dato, NO preguntes el siguiente automáticamente. Solo confirma y deja que la función preguntarSiguienteDato lo haga (pero en tus acciones no generes preguntas adicionales).
+- Si da una dirección o dice "Némocon" o una ciudad, usa "actualizar_ubicacion".
+- Si el usuario intenta corregir o cambiar algo (ej: "mejor en Chía"), debes detectarlo y actualizar el campo correspondiente.
+- NUNCA asumas una cantidad si no la ha dado.
+- Después de actualizar un dato, NO preguntes el siguiente por tu cuenta; la función preguntarSiguienteDato se encargará. Tú solo confirma con una frase humana.
+- Tus respuestas deben ser muy humanas: "Durazno, me encanta", "Ok, te lo envío a Chía", "¿Cuántas unidades quieres?".
 
 Responde SOLO con JSON:
 {
-  "respuesta": "texto corto para usuario (puede ser vacío si la acción lo maneja)",
+  "respuesta": "texto corto y humano (puede ser vacío)",
   "accion": "nada" | "mostrar_adoquines" | "mostrar_fachaletas" | "enviar_imagenes" | "actualizar_tonalidad" | "actualizar_cantidad" | "actualizar_ubicacion",
   "producto_id": "",
   "tonalidad_valor": "",
@@ -210,7 +232,7 @@ ${session.history.slice(-6).map(m => `${m.role === "user" ? "Cliente" : "Ana"}: 
           { role: "system", content: systemPrompt },
           { role: "user", content: textoUsuario }
         ],
-        temperature: 0.5,
+        temperature: 0.7,
         response_format: { type: "json_object" }
       },
       {
@@ -250,7 +272,7 @@ ${session.history.slice(-6).map(m => `${m.role === "user" ? "Cliente" : "Ana"}: 
     case "actualizar_tonalidad":
       if (decision.tonalidad_valor) {
         session.pedido.tonalidad = decision.tonalidad_valor;
-        await enviarMensaje(from, `Listo, ${decision.tonalidad_valor}.`);
+        await enviarMensaje(from, `¡Perfecto! ${decision.tonalidad_valor}.`); // más humano
         await preguntarSiguienteDato(from, session);
       }
       break;
@@ -264,17 +286,15 @@ ${session.history.slice(-6).map(m => `${m.role === "user" ? "Cliente" : "Ana"}: 
     case "actualizar_ubicacion":
       if (decision.ubicacion_valor && !session.pedido.ubicacion) {
         session.pedido.ubicacion = decision.ubicacion_valor;
-        await enviarMensaje(from, `Quedó registrado: ${decision.ubicacion_valor}.`);
-        // Si es Némocon, ofrecer el mapa real
+        await enviarMensaje(from, `Entendido, ${decision.ubicacion_valor}.`);
         if (decision.ubicacion_valor.toLowerCase().includes("némocon") || decision.ubicacion_valor.toLowerCase() === "nemocon") {
-          await enviarMensaje(from, "Aquí tienes la ubicación exacta de la fábrica para que pases a recoger:");
+          await enviarMensaje(from, "Aquí tienes la ubicación de la fábrica para que pases a recoger:");
           await enviarMensaje(from, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
         }
         await preguntarSiguienteDato(from, session);
       }
       break;
     default:
-      // Si no hay acción pero faltan datos, intentar preguntar
       if (!session.pedido.productoNombre || !session.pedido.cantidad || !session.pedido.ubicacion) {
         await preguntarSiguienteDato(from, session);
       }
@@ -326,12 +346,12 @@ app.post("/webhook", async (req, res) => {
     const session = sessions.get(from);
 
     const esPrimerMensaje = !session.presentado;
-    const esSoloSaludo = /^(hola|buenas|dime|hey|qué hubo|qué más|saludos|qué tal|veci|jaja|epa)$/i.test(text.trim());
+    const esSaludo = /^(hola|buenos días|buenas tardes|buenas noches|qué hubo|qué más|saludos|hey|epa|veci)$/i.test(text.trim());
 
-    if (esPrimerMensaje && esSoloSaludo) {
+    if (esPrimerMensaje && esSaludo) {
       session.presentado = true;
-      await enviarMensaje(from, "¡Hola! ¿Cómo vas? Cuéntame qué estás buscando, si adoquines, fachaletas o algún otro producto, con gusto te ayudo.");
-      session.history.push({ role: "assistant", content: "¡Hola! ¿Cómo vas?..." });
+      await enviarMensaje(from, "¡Hola! Buenos días, ¿cómo vas? Cuéntame qué estás buscando, si adoquines, fachaletas o algún otro producto, con gusto te ayudo.");
+      session.history.push({ role: "assistant", content: "¡Hola! Buenos días..." });
       return res.sendStatus(200);
     }
 
@@ -346,7 +366,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Versión definitiva humana"));
+app.get("/", (req, res) => res.send("Ana IA - Versión humana final"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
