@@ -51,20 +51,24 @@ function levenshteinDistance(a, b) {
   return matrix[b.length][a.length];
 }
 
+// Normaliza vocales con tildes y elimina caracteres especiales para mejor comparación
 function normalizarTextoColor(texto) {
   return texto
     .toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z]/g, "");
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // elimina tildes
+    .replace(/[^a-z]/g, ""); // elimina todo lo que no sea letra
 }
 
+// Encuentra el color más parecido dentro de una lista
 function encontrarColorSimilar(texto, coloresDisponibles) {
   const textoNormalizado = normalizarTextoColor(texto);
+  // Primero búsqueda exacta normalizada
   for (const color of coloresDisponibles) {
     if (normalizarTextoColor(color) === textoNormalizado) {
       return color;
     }
   }
+  // Búsqueda por similitud con tolerancia de hasta 3 caracteres
   let mejorMatch = null;
   let menorDistancia = Infinity;
   for (const color of coloresDisponibles) {
@@ -159,8 +163,12 @@ function buscarProducto(texto) {
   return null;
 }
 
+// Mejorada para detectar números grandes correctamente
 function detectarCantidad(texto) {
+  // Primero remover medidas como 20x10x6 para que no interfieran
   let cleanText = texto.replace(/\d+\s*[x*]\s*\d+\s*[x*]\s*\d+/g, '');
+  // Buscar números con o sin separadores de miles (punto o coma)
+  // Soporta: 8000, 8.000, 80,000, 800000
   const match = cleanText.match(/(\d{1,3}(?:[.,]\d{3})*|\d+)(?:\s*unidades?)?/);
   if (match) {
     let numStr = match[1].replace(/\./g, '').replace(',', '');
@@ -171,63 +179,27 @@ function detectarCantidad(texto) {
 }
 
 async function procesarUbicacion(texto, to, session) {
-  const lower = texto.toLowerCase().trim();
-  const recogerFabricaPatterns = [
-    /recoger|pasar|retirar|fábrica|planta/i,
-    /dónde\s+(?:queda|est[aá]n|encuentro|puedo\s+recoger|est[aá]\s+ubicad[oa]s?)/i,
-    /ubicación\s+(?:de\s+la\s+fábrica|de\s+la\s+planta)/i,
-    /en\s+némocon\s+(?:para\s+recoger|lo\s+recojo|paso\s+a\s+recoger)/i,
-    /dónde\s+(?:están|está)\s+ubicados/i,
-    /dónde\s+es\s+que\s+están/i,
-    /dirección\s+de\s+la\s+(?:fábrica|planta|empresa)/i,
-    /dónde\s+queda\s+la\s+(?:fábrica|planta|empresa)/i,
-    /ustedes\s+dónde\s+están/i,
-    /en\s+qué\s+parte\s+están/i,
-    /para\s+recoger\s+dónde\s+es/i,
-    /puedo\s+ir\s+a\s+recoger/i
-  ];
-  const esPreguntaFabrica = recogerFabricaPatterns.some(pattern => pattern.test(lower));
-  if (esPreguntaFabrica) {
+  const lower = texto.toLowerCase();
+  const recogerFabricaPatterns = /recoger|pasar|retirar|fábrica|planta|dónde\s+queda|ubicación\s+de\s+la\s+fábrica|en\s+némocon\s*(?:para\s+recoger|lo\s+recojo|paso\s+a\s+recoger)|dónde\s+están\s+ubicados|dónde\s+es|dirección\s+de\s+la\s+planta/i;
+  if (recogerFabricaPatterns.test(lower)) {
     await enviarMensaje(to, "¡Perfecto! Puedes recoger en nuestra fábrica en Némocon. Aquí te mando la ubicación exacta:");
     await enviarMensaje(to, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
     session.pedido.ubicacion = "Recogida en fábrica (Némocon)";
     return true;
   }
-  const direccionPatterns = /(calle|carrera|avenida|av\.|cra\.|cl\.|diagonal|transversal|kilómetro|km)\s+[\d#\s\-\.]+/i;
+  const direccionPatterns = /(calle|carrera|avenida|av\.|cra\.|cl\.|diagonal|transversal)\s+[\d#\s\-]+/i;
   if (direccionPatterns.test(lower)) {
     session.pedido.ubicacion = texto;
     await enviarMensaje(to, `Dirección guardada: ${texto}`);
     return true;
   }
-  const ciudades = [
-    "chía", "chia", "bogotá", "bogota", "zipaquirá", "zipaquira",
-    "tocancipá", "tocancipa", "sopó", "sopo", "cajicá", "cajica",
-    "némocon", "nemocon", "madrid", "funza", "mosquera", "facatativá", "facatativa"
-  ];
-  const palabras = lower.split(/\s+/);
-  let ciudadEncontrada = null;
-  for (const palabra of palabras) {
-    for (const ciudad of ciudades) {
-      if (palabra === ciudad || palabra.includes(ciudad)) {
-        ciudadEncontrada = ciudad;
-        break;
-      }
-    }
-    if (ciudadEncontrada) break;
+  const ciudadMatch = lower.match(/^(chía|bogotá|zipaquirá|tocancipá|sopo|cajicá|nemocon)$/i);
+  if (ciudadMatch) {
+    session.pedido.ubicacion = ciudadMatch[0];
+    await enviarMensaje(to, `Entendido, ${ciudadMatch[0]}. ¿Me das la dirección completa?`);
+    return false;
   }
-  if (ciudadEncontrada) {
-    session.pedido.ubicacion = ciudadEncontrada;
-    if (ciudadEncontrada === "némocon" || ciudadEncontrada === "nemocon") {
-      await enviarMensaje(to, "Perfecto, puedes recoger en nuestra fábrica en Némocon. Aquí te mando la ubicación:");
-      await enviarMensaje(to, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
-      session.pedido.ubicacion = "Recogida en fábrica (Némocon)";
-      return true;
-    } else {
-      await enviarMensaje(to, `Entendido, ${ciudadEncontrada}. ¿Me das la dirección completa para el envío?`);
-      return false;
-    }
-  }
-  await enviarMensaje(to, "No entendí bien la ubicación. Dime si quieres recoger en nuestra fábrica (Némocon) o escríbeme la dirección completa para envío (ej: Calle 10 # 20-30, Chía).");
+  await enviarMensaje(to, "No entendí bien la ubicación. Dime si quieres recoger en nuestra fábrica (Némocon) o escríbeme la dirección completa para envío.");
   return false;
 }
 
@@ -247,14 +219,11 @@ async function mostrarResumenYcotizacion(to, session) {
   session.cotizacionOfrecida = true;
 }
 
-// FUNCIÓN PRINCIPAL (sin IA externa para evitar fallos)
-// Hemos eliminado la dependencia de OpenAI para que el bot nunca deje de responder.
-// Toda la lógica ya está implementada en código, no se necesita GPT.
-async function procesarConversacion(textoUsuario, from, session) {
+async function procesarConIA(textoUsuario, from, session) {
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
-  // 1. Producto
+  // 1. Si no hay producto seleccionado
   if (!session.pedido.productoId) {
     const producto = buscarProducto(textoUsuario);
     if (producto) {
@@ -275,15 +244,17 @@ async function procesarConversacion(textoUsuario, from, session) {
     }
   }
 
-  // 2. Tonalidad
+  // 2. Si tiene producto pero no tonalidad
   if (session.pedido.productoId && !session.pedido.tonalidad && session.pedido.tonosDisponibles.length > 0) {
     let colorEncontrado = null;
+    // Buscar coincidencia exacta (normalizada)
     for (const color of session.pedido.tonosDisponibles) {
       if (normalizarTextoColor(textoUsuario) === normalizarTextoColor(color)) {
         colorEncontrado = color;
         break;
       }
     }
+    // Si no, buscar por similitud
     if (!colorEncontrado) {
       colorEncontrado = encontrarColorSimilar(textoUsuario, session.pedido.tonosDisponibles);
     }
@@ -297,7 +268,7 @@ async function procesarConversacion(textoUsuario, from, session) {
     }
   }
 
-  // 3. Cantidad
+  // 3. Si falta la cantidad
   if (session.pedido.cantidad === null) {
     const cantidad = detectarCantidad(textoUsuario);
     if (cantidad !== null && cantidad > 0) {
@@ -310,7 +281,7 @@ async function procesarConversacion(textoUsuario, from, session) {
     }
   }
 
-  // 4. Ubicación
+  // 4. Si falta la ubicación
   if (!session.pedido.ubicacion) {
     const resultado = await procesarUbicacion(textoUsuario, from, session);
     if (resultado === true) {
@@ -322,7 +293,7 @@ async function procesarConversacion(textoUsuario, from, session) {
     return;
   }
 
-  // 5. Todo completo
+  // 5. Ya tiene todos los datos
   if (!session.cotizacionOfrecida) {
     await mostrarResumenYcotizacion(from, session);
   } else {
@@ -380,22 +351,15 @@ app.post("/webhook", async (req, res) => {
     }
 
     if (!session.presentado) session.presentado = true;
-    await procesarConversacion(text, from, session);
+    await procesarConIA(text, from, session);
     res.sendStatus(200);
   } catch (error) {
-    console.error("ERROR en webhook:", error);
-    // Enviar un mensaje de error amigable al usuario
-    try {
-      const from = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.from;
-      if (from) {
-        await enviarMensaje(from, "Uy, tuve un problema técnico. Por favor, escríbeme de nuevo en unos segundos.");
-      }
-    } catch (e) {}
+    console.error("ERROR:", error.response?.data || error.message);
     res.sendStatus(200);
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Versión estable sin dependencia de OpenAI"));
+app.get("/", (req, res) => res.send("Ana IA - Con corrección de colores y cantidades grandes"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
