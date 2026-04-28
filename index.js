@@ -31,6 +31,45 @@ function normalizarTexto(texto) {
     .trim();
 }
 
+// Función de similitud (distancia de Levenshtein simple)
+function levenshteinDistance(a, b) {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const matrix = [];
+  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      const cost = a[j - 1] === b[i - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
+// Encuentra el color más parecido dentro de una lista
+function encontrarColorSimilar(texto, coloresDisponibles) {
+  const lowerTexto = texto.toLowerCase();
+  // Primero búsqueda exacta
+  const exacto = coloresDisponibles.find(c => c.toLowerCase() === lowerTexto);
+  if (exacto) return exacto;
+  // Búsqueda por similitud (tolerancia de hasta 2 caracteres de diferencia)
+  let mejorMatch = null;
+  let menorDistancia = Infinity;
+  for (const color of coloresDisponibles) {
+    const distancia = levenshteinDistance(lowerTexto, color.toLowerCase());
+    if (distancia < menorDistancia && distancia <= 2) {
+      menorDistancia = distancia;
+      mejorMatch = color;
+    }
+  }
+  return mejorMatch;
+}
+
 async function enviarMensaje(to, body) {
   await axios.post(
     `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -126,7 +165,6 @@ function detectarCantidad(texto) {
 
 async function procesarUbicacion(texto, to, session) {
   const lower = texto.toLowerCase();
-  // Patrones para recoger en fábrica (sin pedir dirección)
   const recogerFabricaPatterns = /recoger|pasar|retirar|fábrica|planta|dónde\s+queda|ubicación\s+de\s+la\s+fábrica|en\s+némocon\s*(?:para\s+recoger|lo\s+recojo|paso\s+a\s+recoger)|dónde\s+están\s+ubicados|dónde\s+es|dirección\s+de\s+la\s+planta/i;
   if (recogerFabricaPatterns.test(lower)) {
     await enviarMensaje(to, "¡Perfecto! Puedes recoger en nuestra fábrica en Némocon. Aquí te mando la ubicación exacta:");
@@ -134,21 +172,18 @@ async function procesarUbicacion(texto, to, session) {
     session.pedido.ubicacion = "Recogida en fábrica (Némocon)";
     return true;
   }
-  // Dirección completa
   const direccionPatterns = /(calle|carrera|avenida|av\.|cra\.|cl\.|diagonal|transversal)\s+[\d#\s\-]+/i;
   if (direccionPatterns.test(lower)) {
     session.pedido.ubicacion = texto;
     await enviarMensaje(to, `Dirección guardada: ${texto}`);
     return true;
   }
-  // Solo ciudad
   const ciudadMatch = lower.match(/^(chía|bogotá|zipaquirá|tocancipá|sopo|cajicá|nemocon)$/i);
   if (ciudadMatch) {
     session.pedido.ubicacion = ciudadMatch[0];
     await enviarMensaje(to, `Entendido, ${ciudadMatch[0]}. ¿Me das la dirección completa?`);
     return false;
   }
-  // No entendió
   await enviarMensaje(to, "No entendí bien la ubicación. Dime si quieres recoger en nuestra fábrica (Némocon) o escríbeme la dirección completa para envío.");
   return false;
 }
@@ -189,7 +224,6 @@ async function procesarConIA(textoUsuario, from, session) {
         return;
       }
     } else {
-      // Producto no encontrado: mensaje claro + catálogo
       await mostrarCatalogoCompleto(from, false, false, "Esa medida o referencia no la manejamos. Mira nuestro catálogo a ver si alguna te sirve:");
       return;
     }
@@ -197,10 +231,22 @@ async function procesarConIA(textoUsuario, from, session) {
 
   // 2. Si tiene producto pero no tonalidad
   if (session.pedido.productoId && !session.pedido.tonalidad && session.pedido.tonosDisponibles.length > 0) {
-    const colorValido = session.pedido.tonosDisponibles.find(t => textoUsuario.toLowerCase().includes(t.toLowerCase()));
-    if (colorValido) {
-      session.pedido.tonalidad = colorValido;
-      await enviarMensaje(from, `Perfecto, ${colorValido}. ¿Cuántas unidades necesitas?`);
+    // Buscar color exacto o similar
+    let colorEncontrado = null;
+    // Primero búsqueda exacta o por inclusión
+    for (const color of session.pedido.tonosDisponibles) {
+      if (textoUsuario.toLowerCase().includes(color.toLowerCase())) {
+        colorEncontrado = color;
+        break;
+      }
+    }
+    // Si no, usar fuzzy matching
+    if (!colorEncontrado) {
+      colorEncontrado = encontrarColorSimilar(textoUsuario, session.pedido.tonosDisponibles);
+    }
+    if (colorEncontrado) {
+      session.pedido.tonalidad = colorEncontrado;
+      await enviarMensaje(from, `Perfecto, ${colorEncontrado}. ¿Cuántas unidades necesitas?`);
       return;
     } else {
       await enviarMensaje(from, `No reconozco ese color. Tenemos ${session.pedido.tonosDisponibles.join(", ")}. ¿Cuál prefieres?`);
@@ -299,7 +345,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Versión mejorada con detección de ubicación"));
+app.get("/", (req, res) => res.send("Ana IA - Con corrección de errores tipográficos en colores"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
