@@ -169,7 +169,7 @@ function detectarCantidad(texto) {
   return null;
 }
 
-// ==================== FUNCIÓN DE UBICACIÓN MEJORADA ====================
+// ==================== FUNCIÓN DE UBICACIÓN ====================
 async function procesarUbicacion(texto, to, session) {
   const lower = texto.toLowerCase().trim();
   
@@ -202,7 +202,7 @@ async function procesarUbicacion(texto, to, session) {
   const ciudades = [
     "chía", "chia", "bogotá", "bogota", "zipaquirá", "zipaquira", 
     "tocancipá", "tocancipa", "sopó", "sopo", "cajicá", "cajica", 
-    "némocon", "nemocon", "madrid", "funza", "mosquera", "facatativá", "facatativa"
+    "némocon", "nemocon", "madrid", "funza", "mosquera", "facatativá", "facatativa", "cogua"
   ];
   
   let ciudadEncontrada = null;
@@ -285,24 +285,69 @@ async function procesarConIA(textoUsuario, from, session) {
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
-  // ========== NUEVO: DETECCIÓN DE CORRECCIONES ==========
-  const lowerCorr = textoUsuario.toLowerCase();
-  const esCorreccion = /me equivoqu[eé]|correcci[oó]n|era\s+|no\s+es|cambio\s+la\s+cantidad|cambi[oó]\s+el\s+color|rectifico|me\s+equivoqu[eé]\s+de\s+(cantidad|color|producto|ubicación|dirección)/i.test(lowerCorr);
+  // ========== NUEVO: DETECCIÓN DE CORRECCIONES (cantidad, ubicación, color) ==========
+  const lower = textoUsuario.toLowerCase();
+  const esCorreccion = /me equivoqu[eé]|correcci[oó]n|era\s+|no\s+es|cambio\s+la\s+cantidad|cambi[oó]\s+el\s+color|rectifico|me\s+equivoqu[eé]\s+de\s+(cantidad|color|producto|ubicación|dirección)|perd[oó]n|no era|no es ahi|es a|corrijo/i.test(lower);
   
   if (esCorreccion && session.cotizacionOfrecida) {
-    // Intentar extraer la nueva cantidad
-    const nuevaCantMatch = lowerCorr.match(/(\d{1,3}(?:[.,]\d{3})*|\d+)/);
+    let cambioRealizado = false;
+    
+    // 1. Corrección de cantidad (número)
+    const nuevaCantMatch = lower.match(/(\d{1,3}(?:[.,]\d{3})*|\d+)/);
     if (nuevaCantMatch && session.pedido.cantidad !== null) {
       let nuevaCantStr = nuevaCantMatch[1].replace(/\./g, '').replace(',', '');
       let nuevaCant = parseInt(nuevaCantStr, 10);
-      if (!isNaN(nuevaCant) && nuevaCant > 0) {
+      if (!isNaN(nuevaCant) && nuevaCant > 0 && nuevaCant !== session.pedido.cantidad) {
         session.pedido.cantidad = nuevaCant;
         await enviarMensaje(from, `Ah ok, corrijo la cantidad: ${nuevaCant} unidades.`);
-        session.cotizacionOfrecida = false;
-        // Continuamos para que el flujo normal pregunte ubicación o muestre resumen
+        cambioRealizado = true;
       }
     }
-    // Si no se detectó nueva cantidad, se puede extender para color o ubicación (opcional)
+    
+    // 2. Corrección de ubicación (ciudad o dirección)
+    // Patrones: "no era barranquilla era cogua", "es a cogua", "cambio a cogua", "la dirección es calle 5"
+    let nuevaUbicacion = null;
+    // Detectar ciudad nueva después de "era", "es a", "cambio a"
+    const ubicacionMatch = lower.match(/(?:era|es a|cambio a|corrijo a|la dirección es|el envio es a)\s+([a-záéíóúñ\s]+)(?:\.|$)/i);
+    if (ubicacionMatch && ubicacionMatch[1]) {
+      nuevaUbicacion = ubicacionMatch[1].trim();
+    }
+    // También detectar "no era X era Y"
+    const noEraMatch = lower.match(/no era\s+([a-záéíóúñ\s]+)\s+era\s+([a-záéíóúñ\s]+)/i);
+    if (noEraMatch && noEraMatch[2]) {
+      nuevaUbicacion = noEraMatch[2].trim();
+    }
+    if (nuevaUbicacion && session.pedido.ubicacion !== nuevaUbicacion) {
+      session.pedido.ubicacion = nuevaUbicacion;
+      await enviarMensaje(from, `Corrijo la ubicación: ${nuevaUbicacion}.`);
+      cambioRealizado = true;
+    }
+    
+    // 3. Corrección de color (tonalidad)
+    if (session.pedido.tonosDisponibles && session.pedido.tonosDisponibles.length > 0) {
+      let nuevoColor = null;
+      for (const color of session.pedido.tonosDisponibles) {
+        if (lower.includes(color.toLowerCase())) {
+          nuevoColor = color;
+          break;
+        }
+      }
+      if (!nuevoColor) {
+        // Buscar por similitud
+        const colorSimilar = encontrarColorSimilar(textoUsuario, session.pedido.tonosDisponibles);
+        if (colorSimilar) nuevoColor = colorSimilar;
+      }
+      if (nuevoColor && session.pedido.tonalidad !== nuevoColor) {
+        session.pedido.tonalidad = nuevoColor;
+        await enviarMensaje(from, `Corrijo el color: ${nuevoColor}.`);
+        cambioRealizado = true;
+      }
+    }
+    
+    if (cambioRealizado) {
+      session.cotizacionOfrecida = false;
+      // No retornamos aún; dejamos que el flujo normal muestre el nuevo resumen
+    }
   }
   // =====================================================
 
@@ -373,7 +418,6 @@ async function procesarConIA(textoUsuario, from, session) {
       }
       return;
     }
-    // Si resultado es false, no hacemos nada, esperamos la siguiente respuesta
     return;
   }
 
@@ -443,7 +487,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Con corrección de datos por parte del usuario"));
+app.get("/", (req, res) => res.send("Ana IA - Con corrección de cantidad, ubicación y color"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
