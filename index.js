@@ -67,7 +67,23 @@ async function enviarImagenes(to, productoId) {
   return true;
 }
 
-// Función para preguntar el siguiente dato faltante (orden: color -> cantidad -> ubicación)
+// Devuelve un argumento de venta según el producto
+function obtenerArgumentoVenta(productoId, productoNombre) {
+  if (productoId.includes("20x10x6")) {
+    return "Este adoquín es ideal para entradas de carros y zonas de alto tránsito, súper resistente. Además, su color dura mucho tiempo sin decolorarse.";
+  } else if (productoId.includes("ecologico")) {
+    return "Es ecológico, fabricado con materiales reciclados, muy amigable con el ambiente.";
+  } else if (productoId.includes("corbatin")) {
+    return "El diseño corbatín da un toque único y elegante a los pisos, muy buscado para proyectos decorativos.";
+  } else if (productoId.includes("cuarteron")) {
+    return "El cuarterón es muy versátil para andenes y jardines, fácil de instalar.";
+  } else if (productoId.includes("fachaleta")) {
+    return "Da un acabado tipo ladrillo visto sin necesidad de hacer obra pesada, muy económico y bonito.";
+  }
+  return "Son productos de alta calidad, fabricados con arcilla de primera en Némocon.";
+}
+
+// Pregunta el siguiente dato faltante (color → cantidad → ubicación), pero sin asumir cantidad
 async function preguntarSiguienteDato(to, session) {
   if (!session.pedido.productoNombre) {
     await mostrarCatalogoHumano(to);
@@ -78,15 +94,16 @@ async function preguntarSiguienteDato(to, session) {
     return;
   }
   if (!session.pedido.cantidad) {
-    await enviarMensaje(to, "¿Cuántas unidades necesitas? (Ej: 10.000) Así te ayudo con el precio.");
+    await enviarMensaje(to, "¿Cuántas unidades necesitas? Así te ayudo con el precio.");
     return;
   }
   if (!session.pedido.ubicacion) {
-    await enviarMensaje(to, "¿Dónde te lo mandamos? Si es en Némocon, puedes pasar a recoger o te enviamos. Dame la dirección completa.");
+    await enviarMensaje(to, "¿Dónde te lo mandamos? Si es en Némocon, puedes pasar a recoger. Dame la dirección completa.");
     return;
   }
-  // Si ya tiene todo
-  await enviarMensaje(to, `Listo, ya tengo tu pedido: ${session.pedido.productoNombre}, ${session.pedido.tonalidad || "color a definir"}, ${session.pedido.cantidad} unidades, envío a ${session.pedido.ubicacion}. ¿Quieres que te prepare la cotización?`);
+  // Ya tiene todo: ofrecer cotización
+  const argumento = obtenerArgumentoVenta(session.pedido.productoId, session.pedido.productoNombre);
+  await enviarMensaje(to, `Listo, ya tengo tu pedido: ${session.pedido.productoNombre}, color ${session.pedido.tonalidad}, ${session.pedido.cantidad} unidades. ${argumento} ¿Quieres que te prepare una cotización formal?`);
   session.cotizacionOfrecida = true;
 }
 
@@ -96,11 +113,12 @@ async function enviarImagenesYContinuar(to, productoId, session) {
     await enviarMensaje(to, "Ese no lo conozco, ¿me dices el nombre exacto?");
     return;
   }
+  // Enviar imágenes
   await enviarImagenes(to, productoId);
   session.pedido.productoId = productoId;
   session.pedido.productoNombre = item.nombre;
   session.pedido.tonosDisponibles = item.tonos || [];
-  
+  // Preguntar siguiente dato (color)
   await preguntarSiguienteDato(to, session);
 }
 
@@ -137,41 +155,37 @@ function detectarCantidad(texto) {
   return null;
 }
 
-function detectarCambioUbicacion(texto, session) {
-  const lower = texto.toLowerCase();
-  // Si el usuario dice "mejor envíamelo a X", "cambio a X", "prefiero en X"
-  if (lower.includes("mejor") || lower.includes("cambio") || lower.includes("prefiero") || lower.includes("en lugar de")) {
-    // Extraer posible ubicación (palabras después de "a", "en", "para")
-    const match = lower.match(/\b(?:a|en|para)\s+([a-záéíóúñ\s]+)$/i);
-    if (match && match[1].trim().length > 0) {
-      return match[1].trim();
-    }
-  }
-  return null;
-}
-
 async function procesarConIA(textoUsuario, from, session) {
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
-  // Detectar correcciones de ubicación
-  const nuevaUbicacion = detectarCambioUbicacion(textoUsuario, session);
-  if (nuevaUbicacion && session.pedido.ubicacion) {
-    // El usuario quiere cambiar la ubicación
-    session.pedido.ubicacion = nuevaUbicacion;
-    await enviarMensaje(from, `Ah ok, entonces lo enviamos a ${nuevaUbicacion}. ¿Me das la dirección completa?`);
-    // No llamamos a preguntarSiguienteDato aquí porque ya tenemos la ubicación pero no la dirección completa? Mejor esperar siguiente mensaje
-    session.history.push({ role: "assistant", content: `Ah ok, entonces lo enviamos a ${nuevaUbicacion}. ¿Me das la dirección completa?` });
-    return;
-  }
-
-  // Detectar cantidad en el mensaje
+  // Detectar cantidad SOLO si el usuario la da explícitamente
   const nuevaCantidad = detectarCantidad(textoUsuario);
-  if (nuevaCantidad !== null && !session.pedido.cantidad) {
+  if (nuevaCantidad !== null) {
     session.pedido.cantidad = nuevaCantidad;
   }
 
-  // Estado actual para la IA
+  // Detectar si el usuario quiere recoger en Némocon (para no pedir dirección de envío)
+  const textoLower = textoUsuario.toLowerCase();
+  const quiereRecoger = /recojo|recoger|pasar por|retirar|dónde queda|ubicación|maps|google maps/i.test(textoLower);
+  const mencionaNemocon = /némocon|nemocon/i.test(textoLower);
+  
+  if (quiereRecoger && mencionaNemocon && !session.pedido.ubicacion) {
+    session.pedido.ubicacion = "Recoge en Némocon (fábrica)";
+    await enviarMensaje(from, "Claro, la fábrica queda en Némocon. Aquí te mando la ubicación exacta:");
+    await enviarMensaje(from, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
+    // No preguntar más ubicación, pasar al siguiente dato faltante si hay
+    if (!session.pedido.cantidad) {
+      await enviarMensaje(from, "¿Cuántas unidades necesitas?");
+      return;
+    }
+    // Si ya tiene cantidad, ofrecer cotización
+    const argumento = obtenerArgumentoVenta(session.pedido.productoId, session.pedido.productoNombre);
+    await enviarMensaje(from, `Listo, entonces tu pedido: ${session.pedido.productoNombre}, color ${session.pedido.tonalidad || "definir"}, ${session.pedido.cantidad} unidades, lo recoges en la fábrica. ${argumento} ¿Quieres la cotización?`);
+    session.cotizacionOfrecida = true;
+    return;
+  }
+
   const estadoPedido = `
 DATOS ACTUALES:
 - Producto: ${session.pedido.productoNombre || "ninguno"}
@@ -183,7 +197,7 @@ FALTAN (en orden):
 ${!session.pedido.productoNombre ? "- producto" : ""}
 ${(!session.pedido.tonalidad && session.pedido.tonosDisponibles.length > 0) ? "- color (" + session.pedido.tonosDisponibles.join(", ") + ")" : ""}
 ${!session.pedido.cantidad ? "- cantidad" : ""}
-${!session.pedido.ubicacion ? "- dirección de envío" : ""}
+${!session.pedido.ubicacion ? "- dirección de envío (si no es recogida)" : ""}
 `;
 
   const catalogoInfo = Object.entries(catalogo)
@@ -191,26 +205,23 @@ ${!session.pedido.ubicacion ? "- dirección de envío" : ""}
     .join("\n");
 
   const systemPrompt = `
-Eres Ana, una asesora de ventas de Ladrillera La Toscana (Némocon, Colombia). Hablas como una persona normal, cálida, usas "jaja", "uy", "dale", "listo", "epa", "qué más", "veci". Tus respuestas son cortas, con emojis ocasionales pero no en exceso. Evitas palabras robóticas como "anotado", "procesar", "formal", "registrado". En lugar de "Listo, durazno" dices "Durazno, buena elección" o "Ok perfecto". En lugar de "Quedó registrado: Némocon" dices "Perfecto, Némocon".
+Eres Ana, asesora de ventas de Ladrillera La Toscana (Némocon, Colombia). Hablas como una persona normal, cálida, usas "jaja", "uy", "dale", "listo", "epa", "qué más", "veci". Tus respuestas son cortas. EVITA palabras robóticas como "anotado", "procesar", "formal", "registrado", "actualizado". NO des opiniones personales tipo "me encanta". En su lugar, recomienda el producto con argumentos de venta (calidad, resistencia, durabilidad). NO asumas cantidades.
 
 ${estadoPedido}
 
-INSTRUCCIONES ESTRICTAS:
-- SIEMPRE saluda si el usuario dice "hola", "buenos días", etc. Responde con un saludo y luego pregunta qué busca.
-- Si el usuario pide "adoquines" o "fachaletas", usa acción "mostrar_adoquines" o "mostrar_fachaletas".
-- Si da el nombre de un producto (ej: "20x10x6"), usa "enviar_imagenes".
-- Si da un color (ej: "durazno"), usa "actualizar_tonalidad".
-- Si da una cantidad (ej: "100", "10.000"), usa "actualizar_cantidad".
-- Si da una dirección o dice "Némocon" o una ciudad, usa "actualizar_ubicacion".
-- Si el usuario intenta corregir o cambiar algo (ej: "mejor en Chía"), debes detectarlo y actualizar el campo correspondiente.
-- NUNCA asumas una cantidad si no la ha dado.
-- Después de actualizar un dato, NO preguntes el siguiente por tu cuenta; la función preguntarSiguienteDato se encargará. Tú solo confirma con una frase humana.
-- Tus respuestas deben ser muy humanas: "Durazno, me encanta", "Ok, te lo envío a Chía", "¿Cuántas unidades quieres?".
+INSTRUCCIONES:
+- SIEMPRE saluda si el usuario dice "hola", "buenos días". Responde con "¡Hola! Buenos días, ¿cómo vas?" antes de preguntar qué busca.
+- Si pide "adoquines" o "fachaletas" → acción "mostrar_adoquines" o "mostrar_fachaletas".
+- Si da nombre de producto (ej: "20x10x6") → acción "enviar_imagenes".
+- Si da color → acción "actualizar_tonalidad".
+- Si da cantidad → acción "actualizar_cantidad". NUNCA pongas una cantidad inventada.
+- Si da dirección o ciudad → acción "actualizar_ubicacion".
+- Después de actualizar, solo confirma con una frase humana. La función preguntarSiguienteDato se encargará de la siguiente pregunta.
 
 Responde SOLO con JSON:
 {
   "respuesta": "texto corto y humano (puede ser vacío)",
-  "accion": "nada" | "mostrar_adoquines" | "mostrar_fachaletas" | "enviar_imagenes" | "actualizar_tonalidad" | "actualizar_cantidad" | "actualizar_ubicacion",
+  "accion": "nada | mostrar_adoquines | mostrar_fachaletas | enviar_imagenes | actualizar_tonalidad | actualizar_cantidad | actualizar_ubicacion",
   "producto_id": "",
   "tonalidad_valor": "",
   "cantidad_valor": 0,
@@ -248,13 +259,11 @@ ${session.history.slice(-6).map(m => `${m.role === "user" ? "Cliente" : "Ana"}: 
     };
   }
 
-  // Enviar respuesta si existe
   if (decision.respuesta && decision.respuesta.trim() !== "") {
     await enviarMensaje(from, decision.respuesta);
     session.history.push({ role: "assistant", content: decision.respuesta });
   }
 
-  // Ejecutar acción
   switch (decision.accion) {
     case "mostrar_adoquines":
       await mostrarCatalogoHumano(from, "adoquines");
@@ -272,12 +281,12 @@ ${session.history.slice(-6).map(m => `${m.role === "user" ? "Cliente" : "Ana"}: 
     case "actualizar_tonalidad":
       if (decision.tonalidad_valor) {
         session.pedido.tonalidad = decision.tonalidad_valor;
-        await enviarMensaje(from, `¡Perfecto! ${decision.tonalidad_valor}.`); // más humano
+        await enviarMensaje(from, `Listo, ${decision.tonalidad_valor}.`);
         await preguntarSiguienteDato(from, session);
       }
       break;
     case "actualizar_cantidad":
-      if (decision.cantidad_valor && !session.pedido.cantidad) {
+      if (decision.cantidad_valor > 0) {
         session.pedido.cantidad = decision.cantidad_valor;
         await enviarMensaje(from, `Ok, ${decision.cantidad_valor} unidades.`);
         await preguntarSiguienteDato(from, session);
@@ -288,7 +297,7 @@ ${session.history.slice(-6).map(m => `${m.role === "user" ? "Cliente" : "Ana"}: 
         session.pedido.ubicacion = decision.ubicacion_valor;
         await enviarMensaje(from, `Entendido, ${decision.ubicacion_valor}.`);
         if (decision.ubicacion_valor.toLowerCase().includes("némocon") || decision.ubicacion_valor.toLowerCase() === "nemocon") {
-          await enviarMensaje(from, "Aquí tienes la ubicación de la fábrica para que pases a recoger:");
+          await enviarMensaje(from, "Aquí la ubicación de la fábrica:");
           await enviarMensaje(from, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
         }
         await preguntarSiguienteDato(from, session);
@@ -351,7 +360,7 @@ app.post("/webhook", async (req, res) => {
     if (esPrimerMensaje && esSaludo) {
       session.presentado = true;
       await enviarMensaje(from, "¡Hola! Buenos días, ¿cómo vas? Cuéntame qué estás buscando, si adoquines, fachaletas o algún otro producto, con gusto te ayudo.");
-      session.history.push({ role: "assistant", content: "¡Hola! Buenos días..." });
+      session.history.push({ role: "assistant", content: "¡Hola! Buenos días, ¿cómo vas?..." });
       return res.sendStatus(200);
     }
 
@@ -366,7 +375,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Versión humana final"));
+app.get("/", (req, res) => res.send("Ana IA - Versión humana con argumentos de venta"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
