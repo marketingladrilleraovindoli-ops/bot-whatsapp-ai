@@ -14,15 +14,14 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ana123";
 const sessions = new Map();
 const processedMessages = new Set();
 
-// Estado inicial del pedido - NADA se asume, todo empieza en null
 const defaultPedido = {
   productoId: null,
   productoNombre: null,
   tonalidad: null,
   cantidad: null,
   ubicacion: null,
-  tonosDisponibles: [],
-  modoRecoge: false,  // true si el usuario quiere recoger en fábrica
+  modoEntrega: null, // "recoger" o "envio"
+  tonosDisponibles: []
 };
 
 function normalizarTexto(texto) {
@@ -50,7 +49,7 @@ async function enviarMensaje(to, body) {
 async function enviarImagenes(to, productoId) {
   const item = catalogo[productoId];
   if (!item || !item.imagenes || item.imagenes.length === 0) {
-    await enviarMensaje(to, "Ay, todavía no tengo fotos de ese producto. ¿Te interesa otro?");
+    await enviarMensaje(to, "Ay, todavía no tengo fotos de ese producto. ¿Te interesa otro similar?");
     return false;
   }
   for (const img of item.imagenes) {
@@ -69,68 +68,40 @@ async function enviarImagenes(to, productoId) {
   return true;
 }
 
-// Mostrar catálogo SOLO cuando el usuario no especifica producto
-async function mostrarCatalogoHumano(to, categoria = null) {
-  let productos = [];
-  if (categoria === "adoquines") {
-    productos = Object.entries(catalogo).filter(([id]) => id.startsWith("adoquin"));
-    await enviarMensaje(to, "Estos son los adoquines que manejamos:");
-  } else if (categoria === "fachaletas") {
-    productos = Object.entries(catalogo).filter(([id]) => id.startsWith("fachaleta"));
-    await enviarMensaje(to, "Te muestro las fachaletas que tenemos:");
-  } else {
-    productos = Object.entries(catalogo);
-    await enviarMensaje(to, "Mira, te cuento los productos que tenemos:");
-  }
-
-  let mensaje = "";
-  for (const [id, prod] of productos) {
-    mensaje += `- ${prod.nombre}`;
-    if (prod.tonos && prod.tonos.length) mensaje += ` (colores: ${prod.tonos.join(", ")})`;
-    mensaje += "\n";
-  }
-  mensaje += "\n¿Cuál te gusta? Me dices el nombre y te mando fotos.";
-  await enviarMensaje(to, mensaje);
-}
-
-// Extraer producto del mensaje (prioriza referencias como "20x10x6" o nombres del catálogo)
-function extraerProducto(texto) {
-  const lower = texto.toLowerCase();
-  // Buscar patrones de medidas: 20x10x6, 20*10*6, 20x10x8, etc.
-  const medidaMatch = lower.match(/(\d+)\s*[x*]\s*(\d+)\s*[x*]\s*(\d+)/);
-  if (medidaMatch) {
-    const medida = `${medidaMatch[1]}x${medidaMatch[2]}x${medidaMatch[3]}`;
+// Detectar referencia de producto (formato como 20x10x6, 20*10*6, 24x12x6, etc.)
+function detectarReferencia(texto) {
+  // Busca patrones como 20x10x6, 20*10*6, 20*10*3, 24x12x6, etc.
+  const match = texto.match(/(\d{1,2})\s*[x*]\s*(\d{1,2})\s*[x*]\s*(\d{1,2})/i);
+  if (match) {
+    const medida = `${match[1]}x${match[2]}x${match[3]}`;
     // Buscar en catálogo
     for (const [id, prod] of Object.entries(catalogo)) {
       if (id.includes(medida) || prod.nombre.includes(medida)) {
-        return { id, nombre: prod.nombre, tonos: prod.tonos || [] };
+        return { productoId: id, productoNombre: prod.nombre, medida };
       }
     }
+    return null; // No encontrado
   }
-  // Buscar por nombre exacto o parcial
+  // También puede ser nombre como "adoquín corbatín"
   for (const [id, prod] of Object.entries(catalogo)) {
-    if (lower.includes(prod.nombre.toLowerCase())) {
-      return { id, nombre: prod.nombre, tonos: prod.tonos || [] };
+    if (texto.includes(prod.nombre.toLowerCase())) {
+      return { productoId: id, productoNombre: prod.nombre, medida: null };
     }
   }
   return null;
 }
 
-// Extraer cantidad explícita (solo números sueltos, no los que están dentro de una medida)
-function extraerCantidad(texto, productoExtraido) {
-  // Si el texto contiene una medida como 20x10x6, eliminar esa parte para no confundir
+// Detectar cantidad (números sueltos, 1000, 10.000, etc.) pero NO si forma parte de una referencia
+function detectarCantidad(texto, referenciaDetectada) {
+  // Si la cantidad ya fue detectada antes, no volver
+  // Primero, eliminar la referencia del texto para no confundir
   let textoLimpio = texto;
-  if (productoExtraido && productoExtraido.nombre) {
-    const medidaPattern = productoExtraido.nombre.match(/\d+x\d+x\d+/);
-    if (medidaPattern) {
-      textoLimpio = texto.replace(medidaPattern[0], "");
-    }
+  if (referenciaDetectada && referenciaDetectada.medida) {
+    const refRegex = new RegExp(referenciaDetectada.medida.replace(/x/g, '[x*]'), 'i');
+    textoLimpio = textoLimpio.replace(refRegex, '');
   }
-  // También eliminar patrones de medidas sueltas
-  textoLimpio = textoLimpio.replace(/\d+[x*]\d+[x*]\d+/g, "");
-  
-  // Buscar números
-  const match = textoLimpio.match(/\b(\d{1,3}(?:[.,]\d{3})*)\b/);
+  // Buscar números: 1000, 10.000, 100,000, 1000, etc.
+  const match = textoLimpio.match(/(\d{1,3}(?:[.,]\d{3})*|\d+)/);
   if (match) {
     let numStr = match[1].replace(/\./g, '').replace(',', '');
     const numero = parseInt(numStr, 10);
@@ -139,136 +110,176 @@ function extraerCantidad(texto, productoExtraido) {
   return null;
 }
 
-// Detectar si pregunta por ubicación de fábrica o quiere recoger
-function detectarIntencionUbicacion(texto) {
+// Detectar modo de entrega
+function detectarModoEntrega(texto) {
   const lower = texto.toLowerCase();
-  if (/dónde queda|en qué parte|ubicación de la fábrica|dirección de la planta|dónde lo puedo recoger|pasar a recoger|en que parte lo puedo recoger|recogerlo|lo recojo|pasaré a recoger|paso a recoger/i.test(lower)) {
+  if (/(paso a recoger|lo recojo|voy a recoger|recogeré|recojo en fábrica|recojo en planta|pasaré a recoger)/i.test(lower)) {
     return "recoger";
   }
-  if (/env(?:í|i)o|mandar|llevar|domicilio|entregar/i.test(lower)) {
+  if (/(envío|envíen|mandar|enviar a domicilio|llevar a|entregar en)/i.test(lower)) {
     return "envio";
   }
   return null;
 }
 
-// Función principal que maneja el flujo paso a paso
-async function manejarConversacion(textoUsuario, from, session) {
-  const pedido = session.pedido;
-  
+// Detectar ubicación específica (dirección o ciudad)
+function detectarUbicacion(texto) {
+  const lower = texto.toLowerCase();
+  // Si es recoger, no necesitamos dirección completa
+  if (detectarModoEntrega(texto) === "recoger") return "recoger_en_fabrica";
+  // Buscar patrones de dirección: calle, carrera, #, etc.
+  if (/(calle|cra|carrera|av|avenida|diagonal|transversal|#|n°)/i.test(lower)) {
+    return texto; // devolvemos el texto original como dirección
+  }
+  // Ciudades conocidas
+  const ciudades = ["chía", "nemocon", "bogotá", "cajicá", "zipaquirá", "tocancipá"];
+  for (const ciudad of ciudades) {
+    if (lower.includes(ciudad)) return ciudad;
+  }
+  return null;
+}
+
+async function procesarMensaje(textoUsuario, from, session) {
   // Guardar historial
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
-  // ========== PASO 1: Detectar o preguntar PRODUCTO ==========
-  if (!pedido.productoId) {
-    const producto = extraerProducto(textoUsuario);
-    if (producto) {
-      pedido.productoId = producto.id;
-      pedido.productoNombre = producto.nombre;
-      pedido.tonosDisponibles = producto.tonos;
-      await enviarImagenes(from, producto.id);
-      // Preguntar color si tiene tonos
-      if (pedido.tonosDisponibles.length > 0) {
-        await enviarMensaje(from, `¿De qué color lo quieres? Tenemos ${pedido.tonosDisponibles.join(", ")}.`);
-      } else {
-        // Si no tiene tonos, pasar a cantidad
-        await enviarMensaje(from, "¿Cuántas unidades necesitas?");
-      }
+  // 1. DETECTAR REFERENCIA (producto)
+  let referencia = null;
+  if (!session.pedido.productoId) {
+    referencia = detectarReferencia(textoUsuario);
+    if (referencia) {
+      session.pedido.productoId = referencia.productoId;
+      session.pedido.productoNombre = referencia.productoNombre;
+      session.pedido.tonosDisponibles = catalogo[referencia.productoId].tonos || [];
+      // Enviar imágenes automáticamente
+      await enviarImagenes(from, referencia.productoId);
+      await enviarMensaje(from, `Hermoso, el ${referencia.productoNombre}. ¿De qué color lo quieres? Tenemos ${session.pedido.tonosDisponibles.join(", ")}.`);
       return;
     } else {
-      // No se detectó producto, mostrar catálogo
-      await mostrarCatalogoHumano(from);
-      return;
+      // Verificar si el usuario escribió algo que parece una referencia pero no existe
+      if (/(\d{1,2}\s*[x*]\s*\d{1,2}\s*[x*]\s*\d{1,2})/i.test(textoUsuario)) {
+        await enviarMensaje(from, "Esa medida no la manejamos. ¿Te gustaría ver nuestro catálogo de adoquines y fachaletas?");
+        await mostrarCatalogoResumido(from);
+        return;
+      }
     }
   }
 
-  // ========== PASO 2: Detectar o preguntar COLOR (si aplica) ==========
-  if (pedido.tonosDisponibles.length > 0 && !pedido.tonalidad) {
+  // 2. DETECTAR TONALIDAD
+  if (session.pedido.productoId && !session.pedido.tonalidad) {
+    const tonos = session.pedido.tonosDisponibles;
     const lower = textoUsuario.toLowerCase();
-    let tonoEncontrado = null;
-    for (const tono of pedido.tonosDisponibles) {
-      if (lower.includes(tono.toLowerCase())) {
-        tonoEncontrado = tono;
-        break;
+    for (const tono of tonos) {
+      if (lower.includes(tono)) {
+        session.pedido.tonalidad = tono;
+        await enviarMensaje(from, `Perfecto, ${tono}. ¿Cuántas unidades necesitas?`);
+        return;
       }
     }
-    if (tonoEncontrado) {
-      pedido.tonalidad = tonoEncontrado;
-      await enviarMensaje(from, `Perfecto, ${tonoEncontrado}. ¿Cuántas unidades necesitas?`);
-      return;
-    } else {
-      await enviarMensaje(from, `No entendí el color. Tenemos ${pedido.tonosDisponibles.join(", ")}. ¿Cuál prefieres?`);
+    // Si no detectó tono, preguntar de nuevo
+    if (tonos.length > 0) {
+      await enviarMensaje(from, `No entendí el color. Tenemos ${tonos.join(", ")}. ¿Cuál prefieres?`);
       return;
     }
   }
 
-  // ========== PASO 3: Detectar o preguntar CANTIDAD ==========
-  if (pedido.cantidad === null) {
-    const cantidad = extraerCantidad(textoUsuario, { nombre: pedido.productoNombre });
+  // 3. DETECTAR CANTIDAD (solo si no la tiene y ya tiene producto y tonalidad)
+  if (session.pedido.productoId && session.pedido.tonalidad && session.pedido.cantidad === null) {
+    const cantidad = detectarCantidad(textoUsuario, referencia);
     if (cantidad !== null) {
-      pedido.cantidad = cantidad;
-      await enviarMensaje(from, `Ok, ${cantidad} unidades. Ahora, ¿dónde te lo mandamos? (Si es en Némocon puedes pasar a recoger, dime si prefieres envío o recogida)`);
+      session.pedido.cantidad = cantidad;
+      await enviarMensaje(from, `Ok, ${cantidad} unidades. ¿Dónde te lo mandamos? (Si es en Némocon puedes pasar a recoger, dime si prefieres envío o recogida)`);
       return;
     } else {
-      await enviarMensaje(from, "¿Cuántas unidades necesitas?");
+      await enviarMensaje(from, "¿Cuántas unidades necesitas? (Ej: 1000)");
       return;
     }
   }
 
-  // ========== PASO 4: Detectar o preguntar UBICACIÓN ==========
-  if (!pedido.ubicacion) {
-    const intencion = detectarIntencionUbicacion(textoUsuario);
-    
-    if (intencion === "recoger") {
-      pedido.modoRecoge = true;
-      pedido.ubicacion = "Recoge en fábrica - Némocon";
-      await enviarMensaje(from, "Perfecto, aquí tienes la ubicación de la fábrica para que pases a recoger:");
+  // 4. DETECTAR MODO DE ENTREGA Y UBICACIÓN
+  if (session.pedido.cantidad !== null && !session.pedido.modoEntrega) {
+    const modo = detectarModoEntrega(textoUsuario);
+    if (modo === "recoger") {
+      session.pedido.modoEntrega = "recoger";
+      session.pedido.ubicacion = "recoger_en_fabrica";
+      await enviarMensaje(from, "Claro, aquí tienes la ubicación de la fábrica:");
       await enviarMensaje(from, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
-      // Ya tenemos todos los datos
-      await finalizarPedido(from, session);
+      // Mostrar resumen y cotización
+      await mostrarResumenYOferta(from, session);
       return;
-    }
-    
-    if (intencion === "envio") {
+    } else if (modo === "envio") {
+      session.pedido.modoEntrega = "envio";
       await enviarMensaje(from, "Dame la dirección completa para el envío (calle, carrera, número, ciudad).");
       return;
-    }
-    
-    // Si el usuario escribió una dirección (contiene calle, carrera, etc.)
-    const lower = textoUsuario.toLowerCase();
-    if (lower.match(/calle|carrera|diagonal|transversal|avenida|#|n[0-9]/)) {
-      pedido.ubicacion = textoUsuario;
-      await enviarMensaje(from, `Dirección guardada: ${textoUsuario}.`);
-      await finalizarPedido(from, session);
+    } else {
+      // Si no detecta modo, preguntar
+      await enviarMensaje(from, "¿Prefieres recoger en la fábrica (Némocon) o que te lo enviemos?");
       return;
     }
-    
-    // Si solo dijo una ciudad (Chía, Bogotá, etc.)
-    const ciudadMatch = lower.match(/\b(chía|bogotá|medellín|cali|nemocon|sopo|cajicá|zipaquirá)\b/i);
-    if (ciudadMatch) {
-      pedido.ubicacion = ciudadMatch[0];
-      await enviarMensaje(from, `¿Me das la dirección completa en ${ciudadMatch[0]}?`);
+  }
+
+  // 5. DETECTAR UBICACIÓN PARA ENVÍO
+  if (session.pedido.modoEntrega === "envio" && !session.pedido.ubicacion) {
+    const ubicacion = detectarUbicacion(textoUsuario);
+    if (ubicacion && ubicacion !== "recoger_en_fabrica") {
+      session.pedido.ubicacion = ubicacion;
+      await mostrarResumenYOferta(from, session);
+      return;
+    } else {
+      await enviarMensaje(from, "Por favor, escribe la dirección completa (calle, carrera, número, ciudad).");
       return;
     }
-    
-    // Si no entendió, preguntar de nuevo
-    await enviarMensaje(from, "¿Dónde te lo mandamos? Si es en Némocon puedes pasar a recoger, o dime la dirección para envío.");
+  }
+
+  // Si llegamos aquí, algo falló o el usuario está saludando
+  if (/^(hola|buenos días|buenas tardes|qué hubo|epa|veci)$/i.test(textoUsuario)) {
+    if (!session.presentado) {
+      session.presentado = true;
+      await enviarMensaje(from, "¡Hola! Buenos días, ¿cómo vas? Cuéntame qué producto te interesa de nuestro catálogo (adoquines o fachaletas).");
+    } else {
+      await enviarMensaje(from, "¿En qué más te puedo ayudar? Cuéntame qué producto buscas.");
+    }
     return;
   }
 
-  // Si ya tenemos todos los datos, finalizar
-  if (pedido.productoId && pedido.tonalidad && pedido.cantidad !== null && pedido.ubicacion) {
-    await finalizarPedido(from, session);
+  // Si el usuario pide ver el catálogo
+  if (/(catálogo|qué tienes|qué productos|muéstrame)/i.test(textoUsuario)) {
+    await mostrarCatalogoResumido(from);
     return;
   }
+
+  // Respuesta por defecto
+  await enviarMensaje(from, "No entendí bien. ¿Puedes repetir qué producto buscas?");
 }
 
-async function finalizarPedido(from, session) {
-  const pedido = session.pedido;
-  const producto = pedido.productoNombre;
-  const color = pedido.tonalidad || "sin color específico";
-  const cantidad = pedido.cantidad;
-  const ubicacion = pedido.ubicacion;
+async function mostrarCatalogoResumido(to) {
+  const adoquines = Object.entries(catalogo).filter(([id]) => id.startsWith("adoquin"));
+  const fachaletas = Object.entries(catalogo).filter(([id]) => id.startsWith("fachaleta"));
+  
+  let mensaje = "📦 *Nuestros productos:*\n\n*Adoquines:*\n";
+  for (const [id, prod] of adoquines) {
+    mensaje += `- ${prod.nombre}\n`;
+  }
+  mensaje += "\n*Fachaletas:*\n";
+  for (const [id, prod] of fachaletas) {
+    mensaje += `- ${prod.nombre}\n`;
+  }
+  mensaje += "\nEscribe el nombre o la medida que te interesa (ej: 20x10x6) y te muestro fotos.";
+  await enviarMensaje(to, mensaje);
+}
+
+async function mostrarResumenYOferta(to, session) {
+  const producto = session.pedido.productoNombre;
+  const color = session.pedido.tonalidad;
+  const cantidad = session.pedido.cantidad;
+  const modo = session.pedido.modoEntrega;
+  let ubicacionTexto = "";
+  if (modo === "recoger") {
+    ubicacionTexto = "recoges en la fábrica (Némocon)";
+  } else {
+    ubicacionTexto = `envío a ${session.pedido.ubicacion}`;
+  }
   
   let beneficios = "";
   if (producto.includes("20x10x6")) {
@@ -279,10 +290,9 @@ async function finalizarPedido(from, session) {
     beneficios = " Es un producto de excelente calidad, fabricado con materiales seleccionados.";
   }
   
-  await enviarMensaje(from, `Listo, tengo tu pedido: ${producto}, color ${color}, ${cantidad} unidades, ${pedido.modoRecoge ? "lo recoges en fábrica" : `envío a ${ubicacion}`}.${beneficios} ¿Quieres que te prepare una cotización formal?`);
-  
-  // No resetear la sesión, solo marcar que ya se ofreció cotización
+  await enviarMensaje(to, `Listo, tengo tu pedido: ${producto}, color ${color}, ${cantidad} unidades, ${ubicacionTexto}.${beneficios} ¿Quieres que te prepare una cotización formal?`);
   session.cotizacionOfrecida = true;
+  // Resetear pedido después de cotización? No, dejar para que el usuario pueda responder.
 }
 
 // ==============================
@@ -316,7 +326,7 @@ app.post("/webhook", async (req, res) => {
     processedMessages.add(msgId);
 
     text = normalizarTexto(text);
-    console.log(`[${from}]: ${text}`);
+    console.log(`Mensaje de ${from}: ${text}`);
 
     if (!sessions.has(from)) {
       sessions.set(from, {
@@ -329,7 +339,7 @@ app.post("/webhook", async (req, res) => {
     const session = sessions.get(from);
 
     // Comandos de prueba
-    if (text === "#reset" || text === "reset" || text === "reiniciar") {
+    if (text === "#reset") {
       session.pedido = JSON.parse(JSON.stringify(defaultPedido));
       session.cotizacionOfrecida = false;
       session.history = [];
@@ -337,26 +347,19 @@ app.post("/webhook", async (req, res) => {
       await enviarMensaje(from, "🔄 Sesión reiniciada.");
       return res.sendStatus(200);
     }
-
     if (text === "#estado") {
-      const p = session.pedido;
-      await enviarMensaje(from, `Producto: ${p.productoNombre || "❌"}\nColor: ${p.tonalidad || "❌"}\nCantidad: ${p.cantidad ?? "❌"}\nUbicación: ${p.ubicacion || "❌"}`);
+      const estado = `
+Producto: ${session.pedido.productoNombre || "❌"}
+Color: ${session.pedido.tonalidad || "❌"}
+Cantidad: ${session.pedido.cantidad ?? "❌"}
+Ubicación: ${session.pedido.ubicacion || "❌"}
+Modo: ${session.pedido.modoEntrega || "❌"}
+`;
+      await enviarMensaje(from, estado);
       return res.sendStatus(200);
     }
 
-    // Saludo inicial
-    const esPrimerMensaje = !session.presentado;
-    const esSaludo = /^(hola|buenos días|buenas tardes|qué hubo|qué más|saludos|veci)$/i.test(text.trim());
-
-    if (esPrimerMensaje && esSaludo) {
-      session.presentado = true;
-      await enviarMensaje(from, "¡Hola! Buenos días, ¿cómo vas? Cuéntame qué estás buscando (adoquines o fachaletas) y con gusto te ayudo.");
-      return res.sendStatus(200);
-    }
-
-    if (!session.presentado) session.presentado = true;
-
-    await manejarConversacion(text, from, session);
+    await procesarMensaje(text, from, session);
 
     res.sendStatus(200);
   } catch (error) {
@@ -368,4 +371,4 @@ app.post("/webhook", async (req, res) => {
 app.get("/", (req, res) => res.send("Ana IA - Versión reestructurada"));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
