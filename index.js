@@ -173,7 +173,6 @@ function detectarCantidad(texto) {
 async function procesarUbicacion(texto, to, session) {
   const lower = texto.toLowerCase().trim();
   
-  // 1. Detectar si el usuario pregunta por la dirección de la fábrica (sin decidir aún)
   const preguntaFabricaPatterns = [
     /dónde\s+(?:queda|est[aá]n|estan|encuentro|est[aá]\s+ubicad[oa]s?)/i,
     /ubicación\s+(?:de\s+la\s+fábrica|de\s+la\s+planta)/i,
@@ -185,28 +184,21 @@ async function procesarUbicacion(texto, to, session) {
     /donde\s+estan\s+ubicados/i,
     /donde\s+queda\s+la\s+fabrica/i
   ];
-  
   const esPreguntaFabrica = preguntaFabricaPatterns.some(pattern => pattern.test(lower));
   
-  // 2. Detectar intención de RECOGER
   const recogerPatterns = [
     /recoger|pasar|retirar|lo\s+recojo|paso\s+a\s+recoger|voy\s+a\s+recoger|lo\s+retiro|recogida/i
   ];
   const quiereRecoger = recogerPatterns.some(pattern => pattern.test(lower));
   
-  // 3. Detectar intención de ENVÍO
   const envioPatterns = [
     /env[ií]o|enviar|mandar|me\s+lo\s+env[ií]an|a\s+domicilio|env[ií]en|env[ií]o\s+a\s+domicilio|que\s+me\s+lo\s+env[ií]en/i
   ];
   const quiereEnvio = envioPatterns.some(pattern => pattern.test(lower));
   
-  // 4. Detectar ciudad o dirección
-  
-  // Dirección completa
   const direccionPatterns = /(calle|carrera|avenida|av\.|cra\.|cl\.|diagonal|transversal|kilómetro|km)\s+[\d#\s\-\.]+/i;
   const esDireccionCompleta = direccionPatterns.test(lower);
   
-  // Ciudades conocidas
   const ciudades = [
     "chía", "chia", "bogotá", "bogota", "zipaquirá", "zipaquira", 
     "tocancipá", "tocancipa", "sopó", "sopo", "cajicá", "cajica", 
@@ -221,29 +213,24 @@ async function procesarUbicacion(texto, to, session) {
     }
   }
   
-  // ===== LÓGICA PRINCIPAL =====
-  
-  // Caso 1: El usuario pregunta por la ubicación de la fábrica (sin decidir)
   if (esPreguntaFabrica && !quiereRecoger && !quiereEnvio) {
     await enviarMensaje(to, "Nuestra fábrica está en Némocon. Aquí te mando la ubicación:");
     await enviarMensaje(to, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
     await enviarMensaje(to, "¿Prefieres recoger en la fábrica o que te lo enviemos?");
-    return false; // No se ha decidido aún
+    return false;
   }
   
-  // Caso 2: Quiere recoger
   if (quiereRecoger) {
     session.pedido.ubicacion = "Recogida en fábrica (Némocon)";
     await enviarMensaje(to, "Perfecto, entonces lo recoges en nuestra fábrica en Némocon.");
     return true;
   }
   
-  // Caso 3: Quiere envío
   if (quiereEnvio) {
     if (ciudadEncontrada) {
       session.pedido.ubicacion = ciudadEncontrada;
       await enviarMensaje(to, `Entendido, envío a ${ciudadEncontrada}. ¿Me das la dirección completa?`);
-      return false; // Falta dirección
+      return false;
     } else if (esDireccionCompleta) {
       session.pedido.ubicacion = texto;
       await enviarMensaje(to, `Dirección guardada: ${texto}`);
@@ -254,30 +241,25 @@ async function procesarUbicacion(texto, to, session) {
     }
   }
   
-  // Caso 4: Solo dio una ciudad (sin decir explícitamente envío o recogida)
   if (ciudadEncontrada) {
     if (ciudadEncontrada === "némocon" || ciudadEncontrada === "nemocon") {
-      // Asumimos recogida si es Némocon
       session.pedido.ubicacion = "Recogida en fábrica (Némocon)";
       await enviarMensaje(to, "Perfecto, puedes recoger en nuestra fábrica en Némocon. Aquí te mando la ubicación:");
       await enviarMensaje(to, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
       return true;
     } else {
-      // Asumimos envío si es otra ciudad
       session.pedido.ubicacion = ciudadEncontrada;
       await enviarMensaje(to, `Entendido, envío a ${ciudadEncontrada}. ¿Me das la dirección completa?`);
       return false;
     }
   }
   
-  // Caso 5: Dirección completa
   if (esDireccionCompleta) {
     session.pedido.ubicacion = texto;
     await enviarMensaje(to, `Dirección guardada: ${texto}`);
     return true;
   }
   
-  // Caso 6: No entendió
   await enviarMensaje(to, "No entendí bien. ¿Quieres recoger en nuestra fábrica (Némocon) o prefieres que te lo enviemos? Si es envío, dame la dirección completa.");
   return false;
 }
@@ -302,6 +284,27 @@ async function mostrarResumenYcotizacion(to, session) {
 async function procesarConIA(textoUsuario, from, session) {
   session.history.push({ role: "user", content: textoUsuario });
   if (session.history.length > 12) session.history = session.history.slice(-12);
+
+  // ========== NUEVO: DETECCIÓN DE CORRECCIONES ==========
+  const lowerCorr = textoUsuario.toLowerCase();
+  const esCorreccion = /me equivoqu[eé]|correcci[oó]n|era\s+|no\s+es|cambio\s+la\s+cantidad|cambi[oó]\s+el\s+color|rectifico|me\s+equivoqu[eé]\s+de\s+(cantidad|color|producto|ubicación|dirección)/i.test(lowerCorr);
+  
+  if (esCorreccion && session.cotizacionOfrecida) {
+    // Intentar extraer la nueva cantidad
+    const nuevaCantMatch = lowerCorr.match(/(\d{1,3}(?:[.,]\d{3})*|\d+)/);
+    if (nuevaCantMatch && session.pedido.cantidad !== null) {
+      let nuevaCantStr = nuevaCantMatch[1].replace(/\./g, '').replace(',', '');
+      let nuevaCant = parseInt(nuevaCantStr, 10);
+      if (!isNaN(nuevaCant) && nuevaCant > 0) {
+        session.pedido.cantidad = nuevaCant;
+        await enviarMensaje(from, `Ah ok, corrijo la cantidad: ${nuevaCant} unidades.`);
+        session.cotizacionOfrecida = false;
+        // Continuamos para que el flujo normal pregunte ubicación o muestre resumen
+      }
+    }
+    // Si no se detectó nueva cantidad, se puede extender para color o ubicación (opcional)
+  }
+  // =====================================================
 
   // 1. Si no hay producto seleccionado
   if (!session.pedido.productoId) {
@@ -351,8 +354,6 @@ async function procesarConIA(textoUsuario, from, session) {
     const cantidad = detectarCantidad(textoUsuario);
     if (cantidad !== null && cantidad > 0) {
       session.pedido.cantidad = cantidad;
-      
-      // ✅ CAMBIO SOLICITADO: En lugar de la pregunta genérica, enviamos el mapa y preguntamos recogida o envío
       await enviarMensaje(from, `Ok, ${cantidad} unidades. Nuestra fábrica está en Némocon, aquí te mando la ubicación:`);
       await enviarMensaje(from, "https://maps.app.goo.gl/m2nUV7zG5GbjLV8q6");
       await enviarMensaje(from, "¿Prefieres recoger en la fábrica o que te lo enviemos?");
@@ -367,11 +368,12 @@ async function procesarConIA(textoUsuario, from, session) {
   if (!session.pedido.ubicacion) {
     const resultado = await procesarUbicacion(textoUsuario, from, session);
     if (resultado === true) {
-      if (session.pedido.productoNombre && session.pedido.tonalidad && session.pedido.cantidad !== null && session.pedido.ubicacion) {
+      if (session.pedido.productoNombre && session.pedido.tonalidad && session.pedido.cantidad !== null && session.pedido.ubicacion && !session.cotizacionOfrecida) {
         await mostrarResumenYcotizacion(from, session);
       }
       return;
     }
+    // Si resultado es false, no hacemos nada, esperamos la siguiente respuesta
     return;
   }
 
@@ -441,7 +443,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Ana IA - Versión con mapa mostrado automáticamente después de la cantidad"));
+app.get("/", (req, res) => res.send("Ana IA - Con corrección de datos por parte del usuario"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
